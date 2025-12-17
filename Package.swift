@@ -18,7 +18,6 @@ let package = Package(
         .package(url: "https://github.com/ml-explore/mlx-swift.git", from: "0.21.0"),
         .package(url: "https://github.com/ml-explore/mlx-swift-lm.git", from: "2.29.0"),
         .package(url: "https://github.com/huggingface/swift-huggingface.git", from: "0.4.0"),
-        .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "509.0.0"),
     ],
     targets: [
         .target(

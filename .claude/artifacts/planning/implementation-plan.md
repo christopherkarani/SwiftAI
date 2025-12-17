@@ -1,14 +1,23 @@
 # SwiftAI Implementation Plan
 
-> **Version**: 1.0.0
-> **Duration**: 8-12 weeks
-> **Phases**: 15
+> **Version**: 2.0.0
+> **Phases**: 13 (reduced from 15)
+> **Status**: Phases 1-11 Complete, Phase 12 Complete, Phase 13 In Progress
 
 ---
 
 ## Overview
 
-This document outlines the phased implementation approach for building SwiftAI, a unified Swift SDK for LLM inference across MLX, HuggingFace, and Apple Foundation Models.
+SwiftAI is a focused Swift SDK for LLM inference across **two providers**:
+- **MLX**: Local inference on Apple Silicon (offline, privacy-preserving)
+- **HuggingFace**: Cloud inference via HF Inference API (online, model variety)
+
+### What SwiftAI Is NOT
+
+SwiftAI intentionally does **not** wrap Apple Foundation Models. Rationale:
+- Apple's Foundation Models API is already clean and Swift-native
+- Wrapping it adds overhead without meaningful value
+- SwiftAgents (the orchestration layer) will provide its own adapter if needed
 
 ### Design Principles
 
@@ -16,6 +25,7 @@ This document outlines the phased implementation approach for building SwiftAI, 
 2. **Swift 6.2 Concurrency** — Actors, Sendable types, AsyncSequence throughout
 3. **Protocol-Oriented** — Provider abstraction via protocols with associated types
 4. **Progressive Disclosure** — Simple API for beginners, full control for experts
+5. **Focused Scope** — Do two things well rather than three things poorly
 
 ### Phase Dependencies
 
@@ -33,23 +43,13 @@ Phase 7 (Errors) ◄────────────────────
 Phase 8 (Tokens) ──► Phase 9 (Model Mgmt)
      │
      ▼
-Phase 10 (MLX) ──► Phase 11 (HF) ──► Phase 12 (FM)
-                                          │
-                                          ▼
-                                   Phase 13 (Builders)
-                                          │
-                                          ▼
-                                   Phase 14 (Macros)
-                                          │
-                                          ▼
-                                   Phase 15 (Polish)
+Phase 10 (MLX) ──► Phase 11 (HF) ──► Phase 12 (Builders) ──► Phase 13 (Polish)
 ```
 
 ---
 
-## Phase 1: Project Setup & Package.swift
+## Phase 1: Project Setup & Package.swift ✅ COMPLETE
 
-**Duration**: 1-2 days
 **Dependencies**: None
 
 ### Objective
@@ -65,7 +65,7 @@ Establish the Swift package structure, configure dependencies, and create the fo
 
 ```swift
 // Package.swift
-// swift-tools-version: 6.0
+// swift-tools-version: 5.9
 import PackageDescription
 
 let package = Package(
@@ -79,30 +79,21 @@ let package = Package(
         .library(name: "SwiftAI", targets: ["SwiftAI"])
     ],
     dependencies: [
-        // MLX
-        .package(url: "https://github.com/ml-explore/mlx-swift", from: "0.21.0"),
-        .package(url: "https://github.com/huggingface/swift-transformers", from: "0.1.0"),
-        // Macros
-        .package(url: "https://github.com/apple/swift-syntax", from: "600.0.0"),
+        .package(url: "https://github.com/ml-explore/mlx-swift.git", from: "0.21.0"),
+        .package(url: "https://github.com/ml-explore/mlx-swift-lm.git", from: "2.29.0"),
+        .package(url: "https://github.com/huggingface/swift-huggingface.git", from: "0.4.0"),
     ],
     targets: [
         .target(
             name: "SwiftAI",
             dependencies: [
-                .product(name: "MLX", package: "mlx-swift", condition: .when(platforms: [.macOS, .iOS])),
-                .product(name: "MLXLLM", package: "mlx-swift", condition: .when(platforms: [.macOS, .iOS])),
-                .product(name: "Transformers", package: "swift-transformers"),
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+                .product(name: "MLXLLM", package: "mlx-swift-lm"),
+                .product(name: "HuggingFace", package: "swift-huggingface"),
             ],
             swiftSettings: [
                 .enableExperimentalFeature("StrictConcurrency")
-            ]
-        ),
-        .macro(
-            name: "SwiftAIMacros",
-            dependencies: [
-                .product(name: "SwiftSyntax", package: "swift-syntax"),
-                .product(name: "SwiftSyntaxMacros", package: "swift-syntax"),
-                .product(name: "SwiftCompilerPlugin", package: "swift-syntax"),
             ]
         ),
         .testTarget(
@@ -114,16 +105,15 @@ let package = Package(
 ```
 
 ### Acceptance Criteria
-- [ ] `swift build` compiles without errors
-- [ ] `swift package resolve` succeeds
-- [ ] Directory structure matches specification
-- [ ] README has basic project description
+- [x] `swift build` compiles without errors
+- [x] `swift package resolve` succeeds
+- [x] Directory structure matches specification
+- [x] README has basic project description
 
 ---
 
-## Phase 2: Core Protocols
+## Phase 2: Core Protocols ✅ COMPLETE
 
-**Duration**: 2-3 days
 **Dependencies**: Phase 1
 
 ### Objective
@@ -144,10 +134,10 @@ public protocol AIProvider<Response>: Actor, Sendable {
     associatedtype Response: Sendable
     associatedtype StreamChunk: Sendable
     associatedtype ModelID: ModelIdentifying
-    
+
     var isAvailable: Bool { get async }
     var availabilityStatus: ProviderAvailability { get async }
-    
+
     func generate(messages: [Message], model: ModelID, config: GenerateConfig) async throws -> Response
     func stream(messages: [Message], model: ModelID, config: GenerateConfig) -> AsyncThrowingStream<StreamChunk, Error>
     func cancelGeneration() async
@@ -155,16 +145,15 @@ public protocol AIProvider<Response>: Actor, Sendable {
 ```
 
 ### Acceptance Criteria
-- [ ] All protocols defined with full documentation
-- [ ] Primary associated types used where beneficial
-- [ ] All protocols require Sendable conformance
-- [ ] Protocol extensions provide default implementations
+- [x] All protocols defined with full documentation
+- [x] Primary associated types used where beneficial
+- [x] All protocols require Sendable conformance
+- [x] Protocol extensions provide default implementations
 
 ---
 
-## Phase 3: Model Identification
+## Phase 3: Model Identification ✅ COMPLETE
 
-**Duration**: 1-2 days
 **Dependencies**: Phase 1
 
 ### Objective
@@ -186,7 +175,6 @@ public protocol ModelIdentifying: Hashable, Sendable, CustomStringConvertible {
 public enum ModelIdentifier: ModelIdentifying, Codable {
     case mlx(String)
     case huggingFace(String)
-    case foundationModels
 }
 
 // Registry with convenience constants
@@ -198,16 +186,15 @@ extension ModelIdentifier {
 ```
 
 ### Acceptance Criteria
-- [ ] ModelIdentifier enum with all three cases
-- [ ] ModelIdentifying protocol defined
-- [ ] ProviderType enum defined
-- [ ] Model registry with common model constants
+- [x] ModelIdentifier enum with MLX and HuggingFace cases
+- [x] ModelIdentifying protocol defined
+- [x] ProviderType enum defined
+- [x] Model registry with common model constants
 
 ---
 
-## Phase 4: Message Types
+## Phase 4: Message Types ✅ COMPLETE
 
-**Duration**: 2-3 days
 **Dependencies**: Phase 2
 
 ### Objective
@@ -226,23 +213,22 @@ public struct Message: Sendable, Hashable, Codable, Identifiable {
     public let content: Content
     public let timestamp: Date
     public let metadata: MessageMetadata?
-    
+
     public enum Role: String, Sendable, Codable { case system, user, assistant, tool }
     public enum Content: Sendable, Hashable, Codable { case text(String), parts([ContentPart]) }
 }
 ```
 
 ### Acceptance Criteria
-- [ ] Message struct with all properties
-- [ ] Convenience initializers (.system, .user, .assistant)
-- [ ] Codable conformance working
-- [ ] Unit tests passing
+- [x] Message struct with all properties
+- [x] Convenience initializers (.system, .user, .assistant)
+- [x] Codable conformance working
+- [x] Unit tests passing
 
 ---
 
-## Phase 5: Generation Configuration
+## Phase 5: Generation Configuration ✅ COMPLETE
 
-**Duration**: 2-3 days
 **Dependencies**: Phase 2
 
 ### Objective
@@ -261,12 +247,12 @@ public struct GenerateConfig: Sendable, Hashable, Codable {
     public var topP: Float
     public var topK: Int?
     // ... more params
-    
+
     // Presets
     public static let `default` = GenerateConfig()
     public static let creative = GenerateConfig(temperature: 0.9)
     public static let precise = GenerateConfig(temperature: 0.1)
-    
+
     // Fluent API
     public func temperature(_ value: Float) -> GenerateConfig
     public func maxTokens(_ value: Int?) -> GenerateConfig
@@ -274,16 +260,15 @@ public struct GenerateConfig: Sendable, Hashable, Codable {
 ```
 
 ### Acceptance Criteria
-- [ ] All sampling parameters defined
-- [ ] Fluent API methods work correctly
-- [ ] Value clamping for temperature/topP
-- [ ] Presets defined
+- [x] All sampling parameters defined
+- [x] Fluent API methods work correctly
+- [x] Value clamping for temperature/topP
+- [x] Presets defined
 
 ---
 
-## Phase 6: Streaming Infrastructure
+## Phase 6: Streaming Infrastructure ✅ COMPLETE
 
-**Duration**: 3-4 days
 **Dependencies**: Phase 2, 5
 
 ### Objective
@@ -313,16 +298,15 @@ public struct GenerationChunk: Sendable, Hashable {
 ```
 
 ### Acceptance Criteria
-- [ ] GenerationStream conforms to AsyncSequence
-- [ ] Chunk collection works correctly
-- [ ] Cancellation handling via onTermination
-- [ ] Tests for streaming behavior
+- [x] GenerationStream conforms to AsyncSequence
+- [x] Chunk collection works correctly
+- [x] Cancellation handling via onTermination
+- [x] Tests for streaming behavior
 
 ---
 
-## Phase 7: Error Handling
+## Phase 7: Error Handling ✅ COMPLETE
 
-**Duration**: 2-3 days
 **Dependencies**: Phase 6
 
 ### Objective
@@ -330,7 +314,7 @@ Implement comprehensive error handling with AIError enum.
 
 ### Deliverables
 - `Sources/SwiftAI/Core/Errors/AIError.swift`
-- `Sources/SwiftAI/Core/Errors/ProviderError.swift`
+- `Sources/SwiftAI/Core/Errors/SendableError.swift`
 - `Sources/SwiftAI/Core/Types/ProviderAvailability.swift`
 
 ### Key Types
@@ -343,22 +327,21 @@ public enum AIError: Error, Sendable, LocalizedError {
     case tokenLimitExceeded(count: Int, limit: Int)
     case cancelled
     // ... more cases
-    
+
     public var errorDescription: String? { /* localized descriptions */ }
 }
 ```
 
 ### Acceptance Criteria
-- [ ] All error cases defined
-- [ ] LocalizedError conformance
-- [ ] UnavailabilityReason enum complete
-- [ ] ProviderAvailability struct defined
+- [x] All error cases defined
+- [x] LocalizedError conformance
+- [x] UnavailabilityReason enum complete
+- [x] ProviderAvailability struct defined
 
 ---
 
-## Phase 8: Token Counting API
+## Phase 8: Token Counting API ✅ COMPLETE
 
-**Duration**: 2-3 days
 **Dependencies**: Phase 7
 
 ### Objective
@@ -376,7 +359,7 @@ public struct TokenCount: Sendable, Hashable {
     public let text: String
     public let tokenizer: String
     public let tokenIds: [Int]?
-    
+
     public func fitsInContext(of size: Int) -> Bool
     public func remainingIn(context size: Int) -> Int
 }
@@ -387,16 +370,15 @@ extension TokenCounter {
 ```
 
 ### Acceptance Criteria
-- [ ] TokenCount struct complete
-- [ ] Context window helpers work
-- [ ] Truncation extension implemented
-- [ ] Integration with SwiftAgents patterns
+- [x] TokenCount struct complete
+- [x] Context window helpers work
+- [x] Truncation extension implemented
+- [x] Integration with SwiftAgents patterns
 
 ---
 
-## Phase 9: Model Management
+## Phase 9: Model Management ✅ COMPLETE
 
-**Duration**: 3-4 days
 **Dependencies**: Phase 8
 
 ### Objective
@@ -406,14 +388,13 @@ Implement the model download, cache, and lifecycle management system.
 - `Sources/SwiftAI/ModelManagement/ModelManager.swift`
 - `Sources/SwiftAI/ModelManagement/ModelCache.swift`
 - `Sources/SwiftAI/ModelManagement/DownloadProgress.swift`
-- `Sources/SwiftAI/ModelManagement/DownloadTask.swift`
 
 ### Key Features
 
 ```swift
 public actor ModelManager {
     public static let shared = ModelManager()
-    
+
     public func cachedModels() -> [CachedModelInfo]
     public func isCached(_ model: ModelIdentifier) -> Bool
     public func download(_ model: ModelIdentifier, progress: @escaping (DownloadProgress) -> Void) async throws -> URL
@@ -423,16 +404,15 @@ public actor ModelManager {
 ```
 
 ### Acceptance Criteria
-- [ ] ModelManager actor complete
-- [ ] Download with progress works
-- [ ] Cache management functional
-- [ ] Observable DownloadTask
+- [x] ModelManager actor complete
+- [x] Download with progress works
+- [x] Cache management functional
+- [x] Observable DownloadTask
 
 ---
 
-## Phase 10: MLX Provider
+## Phase 10: MLX Provider ✅ COMPLETE
 
-**Duration**: 4-5 days
 **Dependencies**: Phase 9
 
 ### Objective
@@ -446,27 +426,25 @@ Implement the MLX local inference provider.
 ### Key Implementation
 
 ```swift
-public actor MLXProvider: AIProvider, TextGenerator, EmbeddingGenerator, TokenCounter {
+public actor MLXProvider: AIProvider, TextGenerator, TokenCounter {
     // Full implementation with:
     // - Model loading
     // - Generation (sync and streaming)
-    // - Embeddings
     // - Token counting
 }
 ```
 
 ### Acceptance Criteria
-- [ ] Availability check works on Apple Silicon
-- [ ] Generation produces output
-- [ ] Streaming works correctly
-- [ ] Token counting accurate
-- [ ] Memory management handled
+- [x] Availability check works on Apple Silicon
+- [x] Generation produces output
+- [x] Streaming works correctly
+- [x] Token counting accurate
+- [x] Memory management handled
 
 ---
 
-## Phase 11: HuggingFace Provider
+## Phase 11: HuggingFace Provider ✅ COMPLETE
 
-**Duration**: 3-4 days
 **Dependencies**: Phase 10
 
 ### Objective
@@ -489,50 +467,17 @@ public actor HuggingFaceProvider: AIProvider, TextGenerator, EmbeddingGenerator,
 ```
 
 ### Acceptance Criteria
-- [ ] Authentication works
-- [ ] Chat completions functional
-- [ ] SSE streaming implemented
-- [ ] Transcription works
-- [ ] Rate limiting handled
+- [x] Authentication works
+- [x] Chat completions functional
+- [x] SSE streaming implemented
+- [x] Transcription works
+- [x] Rate limiting handled
 
 ---
 
-## Phase 12: Foundation Models Provider
+## Phase 12: Result Builders ✅ COMPLETE
 
-**Duration**: 3-4 days
 **Dependencies**: Phase 11
-
-### Objective
-Implement the Apple Foundation Models wrapper (iOS 26+).
-
-### Deliverables
-- `Sources/SwiftAI/Providers/FoundationModels/FoundationModelsProvider.swift`
-- `Sources/SwiftAI/Providers/FoundationModels/FMSessionManager.swift`
-- `Sources/SwiftAI/Providers/FoundationModels/FMConfiguration.swift`
-
-### Key Implementation
-
-```swift
-@available(iOS 26.0, macOS 26.0, *)
-public actor FoundationModelsProvider: AIProvider, TextGenerator {
-    // Session management
-    // Structured output support
-    // Availability checking
-}
-```
-
-### Acceptance Criteria
-- [ ] Availability check accurate
-- [ ] Session management works
-- [ ] Generation produces output
-- [ ] Structured output with @Generable
-
----
-
-## Phase 13: Result Builders
-
-**Duration**: 2-3 days
-**Dependencies**: Phase 12
 
 ### Objective
 Implement result builders for declarative API construction.
@@ -555,48 +500,16 @@ public func Messages(@MessageBuilder _ builder: () -> [Message]) -> [Message]
 ```
 
 ### Acceptance Criteria
-- [ ] MessageBuilder works with conditionals
-- [ ] PromptBuilder components functional
-- [ ] For-in loop support
-- [ ] Documentation complete
+- [x] MessageBuilder works with conditionals
+- [x] PromptBuilder components functional
+- [x] For-in loop support
+- [x] Documentation complete
 
 ---
 
-## Phase 14: Macros
+## Phase 13: Testing & Polish 🔄 IN PROGRESS
 
-**Duration**: 3-4 days
-**Dependencies**: Phase 13
-
-### Objective
-Implement @StructuredOutput and @Field macros.
-
-### Deliverables
-- `Sources/SwiftAI/Macros/StructuredOutputMacro.swift`
-- `Sources/SwiftAIMacros/` (macro implementation)
-
-### Key Implementation
-
-```swift
-@attached(member, names: named(PartiallyGenerated), named(schema), named(init(from:)))
-@attached(extension, conformances: StructuredOutputProtocol)
-public macro StructuredOutput() = #externalMacro(...)
-
-@attached(peer)
-public macro Field(description: String?, _ constraints: FieldConstraint...) = #externalMacro(...)
-```
-
-### Acceptance Criteria
-- [ ] @StructuredOutput generates schema
-- [ ] @Field constraints work
-- [ ] PartiallyGenerated type generated
-- [ ] Macro tests passing
-
----
-
-## Phase 15: Testing & Polish
-
-**Duration**: 3-4 days
-**Dependencies**: Phase 14
+**Dependencies**: Phase 12
 
 ### Objective
 Complete test coverage, documentation, and final polish.
@@ -614,12 +527,42 @@ Complete test coverage, documentation, and final polish.
 4. Performance benchmarks for MLX
 5. README with quick start guide
 
+### Current Test Files (15 files, ~7,534 lines)
+- Core types: Message, GenerateConfig, ModelIdentifier, TokenCount, TranscriptionResult
+- Protocols: ProtocolCompilationTests
+- Errors: ErrorTests
+- Streaming: StreamingTests
+- Providers: HuggingFaceProviderTests
+- Builders: MessageBuilderTests, PromptBuilderTests
+- Model Management: ModelManagementTests
+- ChatSession: ChatSessionTests
+
+### Missing Tests
+- [ ] MLXProvider integration tests (requires Apple Silicon)
+- [ ] Extension tests (ArrayExtensions, StringExtensions, etc.)
+
 ### Acceptance Criteria
 - [ ] Test coverage >80%
 - [ ] All public APIs documented
 - [ ] Examples compile and run
 - [ ] README complete
 - [ ] SwiftLint clean
+
+---
+
+## Removed Phases
+
+### ~~Phase 12: Foundation Models Provider~~ REMOVED
+
+**Reason**: Apple's Foundation Models API is already clean and Swift-native. Wrapping it adds overhead without meaningful value. SwiftAgents will provide its own adapter if unified orchestration is needed.
+
+### ~~Phase 14: Macros~~ REMOVED
+
+**Reason**:
+- Apple's `@Generable` already handles structured output for Foundation Models
+- MLX uses grammar constraints (different mechanism)
+- HuggingFace uses API parameters
+- Structured output can be achieved via `Codable` + runtime schema generation without macro complexity
 
 ---
 
@@ -633,4 +576,32 @@ Complete test coverage, documentation, and final polish.
 
 ---
 
-*End of SwiftAI Implementation Plan*
+## SwiftAgents Integration Notes
+
+SwiftAgents (the orchestration layer) will:
+1. Define its own `LLMProvider` protocol for agent orchestration
+2. Provide `SwiftAIAdapter` to wrap MLX/HuggingFace providers
+3. Provide `FoundationModelsAdapter` to wrap Apple FM directly
+4. Own the unified abstraction it needs for orchestration
+
+Key SwiftAI APIs that SwiftAgents depends on:
+- `TokenCounter` protocol for context window management
+- `EmbeddingGenerator` for RAG workflows
+- `ModelManager` for downloads and caching
+- `GenerationStream` for streaming responses
+
+---
+
+## Cleanup Tasks
+
+The following stubs can be removed as they are no longer needed:
+
+1. `Sources/SwiftAI/Providers/FoundationModels/FoundationModelsProvider.swift` - DELETE
+2. `Sources/SwiftAI/Providers/FoundationModels/FMSessionManager.swift` - DELETE
+3. `Sources/SwiftAI/Providers/FoundationModels/FMConfiguration.swift` - DELETE (or keep for documentation)
+4. `Sources/SwiftAIMacros/` directory - DELETE entirely
+5. `Sources/SwiftAI/Core/Streaming/StreamBuffer.swift` - DELETE (functionality in GenerationStream)
+
+---
+
+*End of SwiftAI Implementation Plan v2.0*

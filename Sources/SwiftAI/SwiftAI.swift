@@ -1,10 +1,12 @@
 // SwiftAI.swift
 // SwiftAI
 //
-// A unified Swift SDK for LLM inference across multiple providers:
-// - MLX: Local inference on Apple Silicon
-// - HuggingFace: Cloud inference via HF Inference API
-// - Apple Foundation Models: System-integrated on-device AI (iOS 26+)
+// A unified Swift SDK for LLM inference across two providers:
+// - MLX: Local inference on Apple Silicon (offline, privacy-preserving)
+// - HuggingFace: Cloud inference via HF Inference API (online, model variety)
+//
+// Note: Apple Foundation Models (iOS 26+) is intentionally not wrapped.
+// SwiftAgents provides adapters for FM when unified orchestration is needed.
 //
 // Copyright 2025. MIT License.
 
@@ -34,7 +36,6 @@ import Foundation
 // TODO: @_exported import when implemented
 // - GenerationStream
 // - GenerationChunk
-// - StreamBuffer
 
 // Errors
 // TODO: @_exported import when implemented
@@ -45,7 +46,6 @@ import Foundation
 // TODO: @_exported import when implemented
 // - MLXProvider
 // - HuggingFaceProvider
-// - FoundationModelsProvider
 
 // Model Management
 // TODO: @_exported import when implemented
