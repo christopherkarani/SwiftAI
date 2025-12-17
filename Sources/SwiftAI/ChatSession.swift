@@ -1,0 +1,615 @@
+// ChatSession.swift
+// SwiftAI
+
+import Foundation
+
+// MARK: - ChatSession
+
+/// A stateful session manager for multi-turn chat conversations.
+///
+/// `ChatSession` provides a high-level interface for managing conversational
+/// AI interactions. It handles message history, generation state, and provides
+/// thread-safe access to session data using `NSLock` for synchronization.
+///
+/// ## Thread Safety
+///
+/// This class uses `NSLock` for thread-safe access to mutable state. The lock
+/// is never held across `await` points to prevent deadlocks. State is captured
+/// before async operations begin.
+///
+/// ## Usage
+///
+/// ### Basic Conversation
+///
+/// ```swift
+/// let provider = MLXProvider()
+/// let session = ChatSession(
+///     provider: provider,
+///     model: .llama3_2_1B
+/// )
+///
+/// // Set system prompt
+/// session.setSystemPrompt("You are a helpful coding assistant.")
+///
+/// // Send messages
+/// let response = try await session.send("What is Swift?")
+/// print(response)
+///
+/// // Continue the conversation
+/// let followUp = try await session.send("Show me an example.")
+/// print(followUp)
+/// ```
+///
+/// ### Streaming Response
+///
+/// ```swift
+/// let stream = session.stream("Write a haiku about Swift")
+/// for try await token in stream {
+///     print(token, terminator: "")
+/// }
+/// ```
+///
+/// ### History Management
+///
+/// ```swift
+/// // Clear conversation (keeps system prompt)
+/// session.clearHistory()
+///
+/// // Undo last exchange
+/// session.undoLastExchange()
+///
+/// // Inject previous history
+/// session.injectHistory(savedMessages)
+/// ```
+///
+/// ### Cancellation
+///
+/// ```swift
+/// // Cancel ongoing generation
+/// await session.cancel()
+/// ```
+///
+/// ## Observation
+///
+/// ChatSession is `@Observable`, allowing SwiftUI views to automatically
+/// update when state changes:
+///
+/// ```swift
+/// struct ChatView: View {
+///     @State var session: ChatSession<MLXProvider>
+///
+///     var body: some View {
+///         VStack {
+///             ForEach(session.messages) { message in
+///                 MessageView(message: message)
+///             }
+///             if session.isGenerating {
+///                 ProgressView()
+///             }
+///         }
+///     }
+/// }
+/// ```
+///
+/// - Note: This class is marked as `@unchecked Sendable` because thread safety
+///   is enforced manually using `NSLock`. The lock is never held across await points.
+@Observable
+public final class ChatSession<Provider: AIProvider & TextGenerator>: @unchecked Sendable
+where Provider.ModelID == ModelIdentifier {
+
+    // MARK: - Properties
+
+    /// The AI provider used for generation.
+    public let provider: Provider
+
+    /// The model identifier to use for generation.
+    public let model: Provider.ModelID
+
+    /// The conversation history.
+    ///
+    /// Messages are stored in chronological order. Use factory methods
+    /// like `send(_:)` to add messages rather than modifying directly.
+    public private(set) var messages: [Message] = []
+
+    /// Whether a generation is currently in progress.
+    ///
+    /// Use this to show loading indicators in your UI.
+    public private(set) var isGenerating: Bool = false
+
+    /// Configuration for text generation.
+    ///
+    /// Can be modified between calls to `send(_:)` or `stream(_:)`.
+    public var config: GenerateConfig
+
+    /// The most recent error that occurred during generation.
+    ///
+    /// Reset to `nil` at the start of each new generation attempt.
+    public private(set) var lastError: Error?
+
+    /// The current generation task for cancellation support.
+    private var generationTask: Task<Void, Never>?
+
+    /// Lock for thread-safe access to mutable state.
+    private let lock = NSLock()
+
+    // MARK: - Initialization
+
+    /// Creates a new chat session.
+    ///
+    /// ## Usage
+    ///
+    /// ```swift
+    /// let provider = MLXProvider()
+    /// let session = ChatSession(
+    ///     provider: provider,
+    ///     model: .llama3_2_1B,
+    ///     config: .default.temperature(0.8)
+    /// )
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - provider: The AI provider to use for generation.
+    ///   - model: The model identifier for generation.
+    ///   - config: Configuration for generation. Defaults to `.default`.
+    public init(
+        provider: Provider,
+        model: Provider.ModelID,
+        config: GenerateConfig = .default
+    ) {
+        self.provider = provider
+        self.model = model
+        self.config = config
+    }
+
+    // MARK: - Thread-Safe State Access
+
+    /// Executes a closure with the lock held.
+    ///
+    /// - Warning: Never call async functions inside this closure.
+    ///   The lock must not be held across await points.
+    ///
+    /// - Parameter body: The closure to execute while holding the lock.
+    /// - Returns: The value returned by the closure.
+    private func withLock<T>(_ body: () throws -> T) rethrows -> T {
+        lock.lock()
+        defer { lock.unlock() }
+        return try body()
+    }
+
+    // MARK: - System Prompt
+
+    /// Sets or replaces the system prompt.
+    ///
+    /// If a system message already exists at the beginning of the history,
+    /// it is replaced. Otherwise, a new system message is inserted at the
+    /// beginning.
+    ///
+    /// ## Usage
+    ///
+    /// ```swift
+    /// session.setSystemPrompt("You are a helpful coding assistant.")
+    ///
+    /// // Later, update the prompt
+    /// session.setSystemPrompt("You are a creative writing assistant.")
+    /// ```
+    ///
+    /// - Parameter prompt: The system prompt text.
+    public func setSystemPrompt(_ prompt: String) {
+        withLock {
+            let systemMessage = Message.system(prompt)
+
+            if !messages.isEmpty, messages[0].role == .system {
+                messages[0] = systemMessage
+            } else {
+                messages.insert(systemMessage, at: 0)
+            }
+        }
+    }
+
+    // MARK: - Send Message
+
+    /// Sends a message and waits for the complete response.
+    ///
+    /// This method:
+    /// 1. Adds the user message to history
+    /// 2. Calls the provider to generate a response
+    /// 3. Adds the assistant response to history
+    /// 4. Returns the response text
+    ///
+    /// On error, the user message is removed from history and the error
+    /// is stored in `lastError`.
+    ///
+    /// ## Thread Safety
+    ///
+    /// State is captured before async operations. The lock is never held
+    /// across await points.
+    ///
+    /// ## Usage
+    ///
+    /// ```swift
+    /// do {
+    ///     let response = try await session.send("What is Swift?")
+    ///     print(response)
+    /// } catch {
+    ///     print("Generation failed: \(error)")
+    /// }
+    /// ```
+    ///
+    /// - Parameter content: The user message text.
+    /// - Returns: The generated response text.
+    /// - Throws: `AIError` if generation fails, or `CancellationError` if cancelled.
+    @discardableResult
+    public func send(_ content: String) async throws -> String {
+        // Create user message and prepare state
+        let userMessage = Message.user(content)
+
+        // Capture state and add user message under lock
+        let currentMessages: [Message] = withLock {
+            lastError = nil
+            isGenerating = true
+            messages.append(userMessage)
+            return messages
+        }
+
+        // Capture model and config outside of lock for async operation
+        let currentModel = model
+        let currentConfig = config
+
+        do {
+            // Perform generation outside of lock
+            let result = try await provider.generate(
+                messages: currentMessages,
+                model: currentModel,
+                config: currentConfig
+            )
+
+            // Create assistant message with metadata
+            let assistantMessage = Message(
+                role: .assistant,
+                content: .text(result.text),
+                metadata: MessageMetadata(
+                    tokenCount: result.tokenCount,
+                    generationTime: result.generationTime,
+                    model: currentModel.rawValue,
+                    tokensPerSecond: result.tokensPerSecond
+                )
+            )
+
+            // Update state under lock
+            withLock {
+                messages.append(assistantMessage)
+                isGenerating = false
+            }
+
+            return result.text
+
+        } catch {
+            // On error, remove user message and store error
+            withLock {
+                // Remove the user message we just added
+                if let index = messages.lastIndex(where: { $0.id == userMessage.id }) {
+                    messages.remove(at: index)
+                }
+                lastError = error
+                isGenerating = false
+            }
+
+            throw error
+        }
+    }
+
+    // MARK: - Stream Message
+
+    /// Sends a message and streams the response tokens.
+    ///
+    /// This method returns an async stream that yields tokens as they are
+    /// generated. Messages are added to history when the stream completes.
+    ///
+    /// ## Stream Lifecycle
+    ///
+    /// 1. User message is added to history
+    /// 2. Stream yields tokens as they arrive
+    /// 3. On completion, assistant message is added to history
+    /// 4. On error, user message is removed and error is stored
+    ///
+    /// ## Usage
+    ///
+    /// ```swift
+    /// let stream = session.stream("Write a poem about Swift")
+    /// var fullResponse = ""
+    /// do {
+    ///     for try await token in stream {
+    ///         print(token, terminator: "")
+    ///         fullResponse += token
+    ///     }
+    /// } catch {
+    ///     print("Streaming failed: \(error)")
+    /// }
+    /// ```
+    ///
+    /// ## Cancellation
+    ///
+    /// Breaking out of the for-await loop or cancelling the enclosing task
+    /// will stop generation and clean up properly.
+    ///
+    /// - Parameter content: The user message text.
+    /// - Returns: An async throwing stream of response tokens.
+    public func stream(_ content: String) -> AsyncThrowingStream<String, Error> {
+        let userMessage = Message.user(content)
+
+        // Prepare state and capture messages under lock
+        let currentMessages: [Message] = withLock {
+            lastError = nil
+            isGenerating = true
+            messages.append(userMessage)
+            return messages
+        }
+
+        // Capture model and config for the async operation
+        let currentModel = model
+        let currentConfig = config
+
+        return AsyncThrowingStream { continuation in
+            // Store task for cancellation support
+            let task = Task { [weak self] in
+                guard let self = self else {
+                    continuation.finish()
+                    return
+                }
+
+                var fullText = ""
+                var streamError: Error?
+
+                do {
+                    // Get the stream from provider using streamWithMetadata
+                    // which accepts messages array
+                    let providerStream = self.provider.streamWithMetadata(
+                        messages: currentMessages,
+                        model: currentModel,
+                        config: currentConfig
+                    )
+
+                    // Iterate and yield tokens
+                    for try await chunk in providerStream {
+                        // Check for cancellation
+                        try Task.checkCancellation()
+
+                        // Yield the token (text is non-optional in GenerationChunk)
+                        let tokenText = chunk.text
+                        continuation.yield(tokenText)
+                        fullText += tokenText
+                    }
+
+                } catch is CancellationError {
+                    streamError = AIError.cancelled
+
+                } catch {
+                    streamError = error
+                }
+
+                // Finalize state under lock
+                self.withLock {
+                    if let error = streamError {
+                        // Remove user message on error
+                        if let index = self.messages.lastIndex(where: { $0.id == userMessage.id }) {
+                            self.messages.remove(at: index)
+                        }
+                        self.lastError = error
+                    } else {
+                        // Add assistant message on success
+                        let assistantMessage = Message(
+                            role: .assistant,
+                            content: .text(fullText),
+                            metadata: MessageMetadata(model: currentModel.rawValue)
+                        )
+                        self.messages.append(assistantMessage)
+                    }
+                    self.isGenerating = false
+                }
+
+                // Finish the stream
+                if let error = streamError {
+                    continuation.finish(throwing: error)
+                } else {
+                    continuation.finish()
+                }
+            }
+
+            // Store task reference for cancellation
+            self.withLock {
+                self.generationTask = task
+            }
+
+            // Handle stream cancellation
+            continuation.onTermination = { @Sendable [weak self] termination in
+                if case .cancelled = termination {
+                    task.cancel()
+                }
+                self?.withLock {
+                    self?.generationTask = nil
+                }
+            }
+        }
+    }
+
+    // MARK: - History Management
+
+    /// Clears all messages except the system prompt.
+    ///
+    /// If a system message exists at the beginning of the history,
+    /// it is preserved. All other messages are removed.
+    ///
+    /// ## Usage
+    ///
+    /// ```swift
+    /// session.clearHistory()
+    /// // System prompt is preserved, conversation is reset
+    /// ```
+    public func clearHistory() {
+        withLock {
+            if let systemMessage = messages.first, systemMessage.role == .system {
+                messages = [systemMessage]
+            } else {
+                messages = []
+            }
+        }
+    }
+
+    /// Removes the last user-assistant exchange from history.
+    ///
+    /// This removes the most recent pair of user and assistant messages,
+    /// allowing you to "undo" the last conversation turn.
+    ///
+    /// If the last message is a user message without a response, only
+    /// that user message is removed.
+    ///
+    /// ## Usage
+    ///
+    /// ```swift
+    /// // After an unsatisfactory response
+    /// session.undoLastExchange()
+    /// // Try again with different phrasing
+    /// let response = try await session.send("Let me rephrase...")
+    /// ```
+    public func undoLastExchange() {
+        withLock {
+            guard !messages.isEmpty else { return }
+
+            // Remove assistant message if it's the last one
+            if messages.last?.role == .assistant {
+                messages.removeLast()
+            }
+
+            // Remove user message if it's now the last one
+            if messages.last?.role == .user {
+                messages.removeLast()
+            }
+        }
+    }
+
+    /// Injects a conversation history, preserving the current system prompt.
+    ///
+    /// If the current session has a system prompt, it is preserved and
+    /// the injected history (minus any system messages) is appended.
+    ///
+    /// If the current session has no system prompt but the injected
+    /// history has one, that system prompt is used.
+    ///
+    /// ## Usage
+    ///
+    /// ```swift
+    /// // Load saved conversation
+    /// let savedMessages = loadMessagesFromDisk()
+    /// session.injectHistory(savedMessages)
+    /// ```
+    ///
+    /// - Parameter history: The messages to inject.
+    public func injectHistory(_ history: [Message]) {
+        withLock {
+            // Check for existing system prompt
+            let existingSystemPrompt: Message? = messages.first?.role == .system
+                ? messages.first
+                : nil
+
+            // Filter out system messages from injected history
+            let nonSystemMessages = history.filter { $0.role != .system }
+
+            // Check for system prompt in injected history
+            let injectedSystemPrompt = history.first { $0.role == .system }
+
+            // Build new message list
+            if let existingPrompt = existingSystemPrompt {
+                // Keep existing system prompt
+                messages = [existingPrompt] + nonSystemMessages
+            } else if let injectedPrompt = injectedSystemPrompt {
+                // Use injected system prompt
+                messages = [injectedPrompt] + nonSystemMessages
+            } else {
+                // No system prompt
+                messages = nonSystemMessages
+            }
+        }
+    }
+
+    // MARK: - Cancellation
+
+    /// Cancels any in-progress generation.
+    ///
+    /// This method:
+    /// 1. Cancels the current generation task
+    /// 2. Calls the provider's `cancelGeneration()` method
+    ///
+    /// After cancellation, `isGenerating` will be set to `false` and
+    /// `lastError` will contain an `AIError.cancelled`.
+    ///
+    /// ## Usage
+    ///
+    /// ```swift
+    /// // Start streaming in the background
+    /// Task {
+    ///     for try await token in session.stream("Long request...") {
+    ///         print(token, terminator: "")
+    ///     }
+    /// }
+    ///
+    /// // Cancel from another context
+    /// await session.cancel()
+    /// ```
+    public func cancel() async {
+        // Get and clear task under lock
+        let task: Task<Void, Never>? = withLock {
+            let currentTask = generationTask
+            generationTask = nil
+            return currentTask
+        }
+
+        // Cancel the task
+        task?.cancel()
+
+        // Cancel at the provider level
+        await provider.cancelGeneration()
+
+        // Update state
+        withLock {
+            if isGenerating {
+                isGenerating = false
+                lastError = AIError.cancelled
+            }
+        }
+    }
+
+    // MARK: - Computed Properties
+
+    /// The total number of messages in the conversation.
+    ///
+    /// Includes system, user, and assistant messages.
+    public var messageCount: Int {
+        withLock { messages.count }
+    }
+
+    /// The number of user messages in the conversation.
+    ///
+    /// Useful for tracking the number of conversation turns.
+    public var userMessageCount: Int {
+        withLock {
+            messages.filter { $0.role == .user }.count
+        }
+    }
+
+    /// Whether the session has an active system prompt.
+    public var hasSystemPrompt: Bool {
+        withLock {
+            messages.first?.role == .system
+        }
+    }
+
+    /// The current system prompt, if any.
+    public var systemPrompt: String? {
+        withLock {
+            guard let first = messages.first, first.role == .system else {
+                return nil
+            }
+            return first.content.textValue
+        }
+    }
+}
