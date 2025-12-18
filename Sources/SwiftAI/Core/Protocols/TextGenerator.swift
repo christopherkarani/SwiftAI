@@ -352,3 +352,112 @@ extension TextGenerator {
         streamWithMetadata(messages: messages, model: model, config: .default)
     }
 }
+
+// MARK: - Model Warmup
+
+extension TextGenerator {
+
+    /// Warms up the model by performing a minimal generation pass.
+    ///
+    /// This method triggers JIT compilation, initializes memory caches, and sets up
+    /// the attention cache for the specified model. The first generation call to a
+    /// model typically takes significantly longer (1-3 seconds) due to these
+    /// initialization costs. Subsequent calls are much faster (~100-500ms).
+    ///
+    /// ## When to Use
+    ///
+    /// Call `warmUp()` in the following scenarios:
+    /// - At app startup, after model loading completes
+    /// - Before time-sensitive operations (e.g., user-initiated chat)
+    /// - After switching to a different model
+    /// - When resuming from background (on some platforms)
+    ///
+    /// ## Performance Characteristics
+    ///
+    /// **First Call (Cold Start)**:
+    /// - JIT compilation: ~500-1000ms
+    /// - Memory allocation: ~200-500ms
+    /// - Attention cache setup: ~100-300ms
+    /// - Total: ~1-3 seconds (model and hardware dependent)
+    ///
+    /// **Subsequent Calls (Warm)**:
+    /// - No compilation or cache initialization
+    /// - Direct execution: ~100-500ms
+    ///
+    /// ## Implementation Details
+    ///
+    /// The warmup process:
+    /// 1. Performs a minimal generation (1 token by default)
+    /// 2. Uses deterministic settings (temperature: 0)
+    /// 3. Discards the output (return value can be ignored)
+    /// 4. Leaves caches and JIT-compiled code resident in memory
+    ///
+    /// ## Example
+    ///
+    /// ```swift
+    /// // At app startup
+    /// let provider = MLXProvider()
+    /// try await provider.warmUp(model: .llama3_2_1B)
+    ///
+    /// // Later, user-initiated generation is fast
+    /// let response = try await provider.generate(
+    ///     "Hello",
+    ///     model: .llama3_2_1B,
+    ///     config: .default
+    /// )
+    /// ```
+    ///
+    /// ## Custom Warmup Text
+    ///
+    /// ```swift
+    /// // Use domain-specific warmup text
+    /// try await provider.warmUp(
+    ///     model: .llama3_2_1B,
+    ///     prefillText: "Assistant:"
+    /// )
+    /// ```
+    ///
+    /// ## Extended Warmup
+    ///
+    /// ```swift
+    /// // Generate more tokens to warm up longer sequences
+    /// try await provider.warmUp(
+    ///     model: .llama3_2_1B,
+    ///     prefillText: "The quick brown fox",
+    ///     maxTokens: 10
+    /// )
+    /// ```
+    ///
+    /// ## Background Warmup
+    ///
+    /// ```swift
+    /// // Warm up asynchronously without blocking UI
+    /// Task.detached {
+    ///     try? await provider.warmUp(model: .llama3_2_1B)
+    /// }
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - model: The model identifier to warm up. Must be a valid model for this provider.
+    ///   - prefillText: The text to use for prefilling during warmup. Default is "Hello".
+    ///     This text is processed but the output is discarded. Choose text that is
+    ///     representative of your use case for optimal cache population.
+    ///   - maxTokens: The number of tokens to generate during warmup. Default is 1.
+    ///     Higher values may provide better warmup for longer sequences but take longer.
+    ///
+    /// - Throws: `AIError` if warmup fails due to model loading errors or generation failures.
+    ///
+    /// - Note: This method is safe to call multiple times. Subsequent calls to the same
+    ///   model will be fast but won't provide additional benefit.
+    ///
+    /// - Important: The generated text is intentionally discarded. Do not use this method
+    ///   for actual text generation - use `generate()` instead.
+    public func warmUp(
+        model: ModelID,
+        prefillText: String = "Hello",
+        maxTokens: Int = 1
+    ) async throws {
+        let config = GenerateConfig(maxTokens: maxTokens, temperature: 0)
+        _ = try await generate(prefillText, model: model, config: config)
+    }
+}

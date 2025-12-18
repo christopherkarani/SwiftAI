@@ -419,4 +419,133 @@ struct ChatSessionTests {
 
         #expect(session.userMessageCount == 2)
     }
+
+    // MARK: - Warmup Tests
+
+    @Test("WarmupConfig default has warmupOnInit false")
+    func warmupConfigDefault() {
+        let config = WarmupConfig.default
+
+        #expect(config.warmupOnInit == false)
+        #expect(config.prefillChars == 50)
+        #expect(config.warmupTokens == 5)
+    }
+
+    @Test("WarmupConfig eager has warmupOnInit true")
+    func warmupConfigEager() {
+        let config = WarmupConfig.eager
+
+        #expect(config.warmupOnInit == true)
+        #expect(config.prefillChars == 50)
+        #expect(config.warmupTokens == 5)
+    }
+
+    @Test("WarmupConfig custom initializer")
+    func warmupConfigCustom() {
+        let config = WarmupConfig(
+            warmupOnInit: true,
+            prefillChars: 100,
+            warmupTokens: 10
+        )
+
+        #expect(config.warmupOnInit == true)
+        #expect(config.prefillChars == 100)
+        #expect(config.warmupTokens == 10)
+    }
+
+    @Test("ChatSession async init with default warmup does not call warmUp")
+    func asyncInitNoWarmup() async throws {
+        let provider = MockTextProvider()
+
+        let session = try await ChatSession(
+            provider: provider,
+            model: .llama3_2_1B,
+            warmup: .default
+        )
+
+        // Verify session was created
+        #expect(session.messageCount == 0)
+
+        // Verify warmUp was not called (generate count should be 0)
+        let callCount = await provider.generateCallCount
+        #expect(callCount == 0)
+    }
+
+    @Test("ChatSession async init with eager warmup calls warmUp")
+    func asyncInitEagerWarmup() async throws {
+        let provider = MockTextProvider()
+
+        let session = try await ChatSession(
+            provider: provider,
+            model: .llama3_2_1B,
+            warmup: .eager
+        )
+
+        // Verify session was created
+        #expect(session.messageCount == 0)
+
+        // Verify warmUp was called (generate count should be 1 from warmup)
+        let callCount = await provider.generateCallCount
+        #expect(callCount == 1)
+
+        // Verify the warmup message was short (warmup text)
+        let lastMessages = await provider.lastReceivedMessages
+        #expect(lastMessages.count == 1)
+        if let firstMessage = lastMessages.first {
+            #expect(firstMessage.role == .user)
+            // Warmup text should be ~50 chars with "Hi! " pattern
+            let content = firstMessage.content.textValue ?? ""
+            #expect(content.count <= 50)
+            #expect(content.contains("Hi!"))
+        }
+    }
+
+    @Test("ChatSession async init with custom warmup config")
+    func asyncInitCustomWarmup() async throws {
+        let provider = MockTextProvider()
+
+        let customWarmup = WarmupConfig(
+            warmupOnInit: true,
+            prefillChars: 20,
+            warmupTokens: 3
+        )
+
+        let session = try await ChatSession(
+            provider: provider,
+            model: .llama3_2_1B,
+            warmup: customWarmup
+        )
+
+        // Verify session was created
+        #expect(session.messageCount == 0)
+
+        // Verify warmUp was called
+        let callCount = await provider.generateCallCount
+        #expect(callCount == 1)
+
+        // Verify the warmup text respects prefillChars
+        let lastMessages = await provider.lastReceivedMessages
+        if let firstMessage = lastMessages.first {
+            let content = firstMessage.content.textValue ?? ""
+            #expect(content.count <= 20)
+        }
+    }
+
+    @Test("ChatSession synchronous init does not perform warmup")
+    func syncInitNoWarmup() async throws {
+        let provider = MockTextProvider()
+
+        // Synchronous init - no warmup parameter
+        let session = ChatSession(
+            provider: provider,
+            model: .llama3_2_1B
+        )
+
+        // Verify session was created
+        #expect(session.messageCount == 0)
+
+        // Verify warmUp was not called
+        let callCount = await provider.generateCallCount
+        #expect(callCount == 0)
+    }
 }

@@ -6,6 +6,7 @@ import Foundation
 @preconcurrency import MLX
 @preconcurrency import MLXLMCommon
 @preconcurrency import MLXLLM
+@preconcurrency import MLXVLM
 // Note: Tokenizer protocol is re-exported through MLXLMCommon
 #endif
 
@@ -43,20 +44,6 @@ import Foundation
 ///   not be used directly by application code.
 internal actor MLXModelLoader {
 
-    // MARK: - Types
-
-    /// Information about a loaded model in memory.
-    struct LoadedModel: Sendable {
-        /// The model identifier (repository ID).
-        let modelId: String
-
-        /// When this model was first loaded into memory.
-        let loadedAt: Date
-
-        /// When this model was last accessed (for LRU eviction).
-        var lastAccessedAt: Date
-    }
-
     // MARK: - Properties
 
     /// The MLX configuration for this loader.
@@ -66,18 +53,9 @@ internal actor MLXModelLoader {
     ///
     /// When this limit is reached, the least recently used model is evicted
     /// before loading a new one.
-    let maxLoadedModels: Int
-
-    /// Metadata about loaded models (indexed by model ID).
-    private var loadedModels: [String: LoadedModel] = [:]
-
-    #if arch(arm64)
-    /// The actual model containers (indexed by model ID).
     ///
-    /// Separate from LoadedModel because ModelContainer is a class
-    /// and may not be Sendable.
-    private var modelContainers: [String: ModelContainer] = [:]
-    #endif
+    /// - Note: This is now managed by MLXModelCache.
+    let maxLoadedModels: Int
 
     // MARK: - Initialization
 
@@ -100,6 +78,10 @@ internal actor MLXModelLoader {
     /// immediately. Otherwise, downloads the model (if needed) and loads it
     /// into memory.
     ///
+    /// This method automatically detects VLM capabilities and routes to the
+    /// appropriate factory (VLMModelFactory for vision models, LLMModelFactory
+    /// for text-only models).
+    ///
     /// - Parameter identifier: The model identifier to load.
     /// - Returns: The loaded model container.
     /// - Throws: `AIError` if loading fails.
@@ -114,41 +96,55 @@ internal actor MLXModelLoader {
             throw AIError.invalidInput("MLXModelLoader only supports .mlx() model identifiers")
         }
 
-        // Return cached if already loaded
-        if let container = modelContainers[modelId] {
-            // Update access time
-            if var info = loadedModels[modelId] {
-                info.lastAccessedAt = Date()
-                loadedModels[modelId] = info
-            }
-            return container
+        // Check cache first
+        if let cached = await MLXModelCache.shared.get(modelId) {
+            // Set as current model
+            await MLXModelCache.shared.setCurrentModel(modelId)
+            return cached.container
         }
 
-        // Evict if at capacity
-        await evictIfNeeded()
+        // Detect model capabilities using VLMDetector
+        let capabilities = await VLMDetector.shared.detectCapabilities(identifier)
 
         // Create MLX configuration using model ID
         // mlx-swift-lm handles downloading and caching internally via HuggingFace Hub
         let modelConfig = ModelConfiguration(id: modelId)
 
-        // Load the model
+        // Load the model using the appropriate factory based on capabilities
         do {
-            let container = try await LLMModelFactory.shared.loadContainer(
-                configuration: modelConfig,
-                progressHandler: { progress in
-                    // Progress tracking for model weight loading
-                    // Could expose this via a callback in the future
-                }
-            )
+            let container: ModelContainer
 
-            // Cache the loaded model
-            let info = LoadedModel(
-                modelId: modelId,
-                loadedAt: Date(),
-                lastAccessedAt: Date()
+            if capabilities.supportsVision {
+                // Route to VLMModelFactory for vision-capable models
+                container = try await VLMModelFactory.shared.loadContainer(
+                    configuration: modelConfig,
+                    progressHandler: { progress in
+                        // Progress tracking for model weight loading
+                        // Could expose this via a callback in the future
+                    }
+                )
+            } else {
+                // Route to LLMModelFactory for text-only models
+                container = try await LLMModelFactory.shared.loadContainer(
+                    configuration: modelConfig,
+                    progressHandler: { progress in
+                        // Progress tracking for model weight loading
+                        // Could expose this via a callback in the future
+                    }
+                )
+            }
+
+            // Estimate model size (rough estimate based on model name or default to 2GB)
+            let estimatedSize = estimateModelSize(modelId: modelId)
+
+            // Cache the loaded model with its capabilities
+            let cachedModel = MLXModelCache.CachedModel(
+                container: container,
+                capabilities: capabilities,
+                weightsSize: estimatedSize
             )
-            loadedModels[modelId] = info
-            modelContainers[modelId] = container
+            await MLXModelCache.shared.set(cachedModel, forKey: modelId)
+            await MLXModelCache.shared.setCurrentModel(modelId)
 
             // Mark as accessed in ModelManager for LRU tracking
             await ModelManager.shared.markAccessed(identifier)
@@ -169,11 +165,7 @@ internal actor MLXModelLoader {
     /// - Parameter identifier: The model to unload.
     func unloadModel(identifier: ModelIdentifier) async {
         guard case .mlx(let modelId) = identifier else { return }
-
-        loadedModels.removeValue(forKey: modelId)
-        #if arch(arm64)
-        modelContainers.removeValue(forKey: modelId)
-        #endif
+        await MLXModelCache.shared.remove(modelId)
     }
 
     /// Unloads all models from memory.
@@ -181,19 +173,41 @@ internal actor MLXModelLoader {
     /// Clears the in-memory cache of all loaded models. Model files remain
     /// on disk and can be reloaded later.
     func unloadAllModels() async {
-        loadedModels.removeAll()
-        #if arch(arm64)
-        modelContainers.removeAll()
-        #endif
+        await MLXModelCache.shared.removeAll()
     }
 
     /// Checks if a model is currently loaded in memory.
     ///
     /// - Parameter identifier: The model to check.
     /// - Returns: `true` if the model is loaded, `false` otherwise.
-    func isLoaded(_ identifier: ModelIdentifier) -> Bool {
+    func isLoaded(_ identifier: ModelIdentifier) async -> Bool {
         guard case .mlx(let modelId) = identifier else { return false }
-        return loadedModels[modelId] != nil
+        return await MLXModelCache.shared.contains(modelId)
+    }
+
+    /// Returns the capabilities of a loaded model.
+    ///
+    /// If the model is not currently loaded, this returns `nil`.
+    /// To get capabilities without loading, use `VLMDetector.shared.detectCapabilities()`.
+    ///
+    /// - Parameter identifier: The model to query.
+    /// - Returns: The model's capabilities if loaded, `nil` otherwise.
+    ///
+    /// ## Example
+    /// ```swift
+    /// let identifier = ModelIdentifier.mlx("mlx-community/llava-1.5-7b-4bit")
+    /// if let capabilities = await modelLoader.getCapabilities(identifier) {
+    ///     if capabilities.supportsVision {
+    ///         print("VLM detected: \(capabilities.architectureType?.rawValue ?? "unknown")")
+    ///     }
+    /// }
+    /// ```
+    func getCapabilities(_ identifier: ModelIdentifier) async -> ModelCapabilities? {
+        guard case .mlx(let modelId) = identifier else { return nil }
+        if let cached = await MLXModelCache.shared.get(modelId) {
+            return cached.capabilities
+        }
+        return nil
     }
 
     // MARK: - Tokenizer Access
@@ -230,23 +244,44 @@ internal actor MLXModelLoader {
 
     // MARK: - Private Helpers
 
-    /// Evicts the least recently used model if at capacity.
+    #if arch(arm64)
+    /// Estimates model size based on model ID heuristics.
     ///
-    /// When the number of loaded models reaches `maxLoadedModels`, this method
-    /// removes the model with the oldest `lastAccessedAt` timestamp.
-    private func evictIfNeeded() async {
-        guard loadedModels.count >= maxLoadedModels else { return }
+    /// This is a rough estimate based on common model naming patterns.
+    /// For more accurate sizes, the actual weights file would need to be inspected.
+    ///
+    /// - Parameter modelId: The model identifier (repository ID).
+    /// - Returns: Estimated model size in bytes.
+    private func estimateModelSize(modelId: String) -> ByteCount {
+        let lowercased = modelId.lowercased()
 
-        // Find the least recently accessed model
-        let oldest = loadedModels.min { $0.value.lastAccessedAt < $1.value.lastAccessedAt }
-
-        if let oldest = oldest {
-            loadedModels.removeValue(forKey: oldest.key)
-            #if arch(arm64)
-            modelContainers.removeValue(forKey: oldest.key)
-            #endif
+        // Check for size indicators in the model name
+        if lowercased.contains("1b") || lowercased.contains("1.5b") {
+            return .gigabytes(1)
+        } else if lowercased.contains("3b") {
+            return .gigabytes(2)
+        } else if lowercased.contains("7b") {
+            return .gigabytes(4)
+        } else if lowercased.contains("13b") {
+            return .gigabytes(8)
+        } else if lowercased.contains("30b") || lowercased.contains("33b") {
+            return .gigabytes(16)
+        } else if lowercased.contains("70b") {
+            return .gigabytes(32)
         }
+
+        // Check for quantization indicators
+        if lowercased.contains("4bit") || lowercased.contains("q4") {
+            // 4-bit quantized models are roughly 1/4 size
+            return .gigabytes(2)
+        } else if lowercased.contains("8bit") || lowercased.contains("q8") {
+            return .gigabytes(4)
+        }
+
+        // Default fallback
+        return .gigabytes(2)
     }
+    #endif
 
     /// Resolves the local file path for a model, downloading if necessary.
     ///

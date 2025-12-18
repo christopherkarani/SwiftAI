@@ -50,6 +50,16 @@ public enum AIError: Error, Sendable, LocalizedError, CustomStringConvertible {
     /// For local providers, the model must be downloaded before use.
     case modelNotCached(ModelIdentifier)
 
+    /// The model is not compatible with the target provider.
+    ///
+    /// The model cannot be used with MLX because it lacks required files,
+    /// uses an unsupported architecture, or is not optimized for Apple Silicon.
+    ///
+    /// - Parameters:
+    ///   - model: The incompatible model identifier
+    ///   - reasons: Descriptions of why the model is incompatible
+    case incompatibleModel(model: ModelIdentifier, reasons: [String])
+
     /// Authentication failed.
     ///
     /// API key is invalid, expired, or missing.
@@ -151,6 +161,10 @@ public enum AIError: Error, Sendable, LocalizedError, CustomStringConvertible {
         case .modelNotCached(let model):
             return "Model not cached: \(model.rawValue)"
 
+        case .incompatibleModel(let model, let reasons):
+            let reasonList = reasons.joined(separator: ", ")
+            return "Model '\(model.rawValue)' is not compatible: \(reasonList)"
+
         case .authenticationFailed(let message):
             return "Authentication failed: \(message)"
 
@@ -218,6 +232,9 @@ public enum AIError: Error, Sendable, LocalizedError, CustomStringConvertible {
 
         case .modelNotCached:
             return "Download the model using ModelManager.shared.download() before using it."
+
+        case .incompatibleModel:
+            return "Use an MLX-optimized version from mlx-community or choose a compatible model architecture."
 
         case .authenticationFailed:
             return "Verify your API key is correct and has not expired."
@@ -386,7 +403,7 @@ extension AIError {
     /// The category of this error.
     public var category: ErrorCategory {
         switch self {
-        case .providerUnavailable, .modelNotFound, .modelNotCached, .authenticationFailed:
+        case .providerUnavailable, .modelNotFound, .modelNotCached, .incompatibleModel, .authenticationFailed:
             return .provider
         case .generationFailed, .tokenLimitExceeded, .contentFiltered, .cancelled, .timeout:
             return .generation

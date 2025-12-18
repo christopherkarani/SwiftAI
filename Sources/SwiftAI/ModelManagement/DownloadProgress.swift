@@ -98,6 +98,70 @@ public struct DownloadProgress: Sendable, Equatable {
 
     // MARK: - Computed Properties
 
+    /// Human-readable formatted estimated time remaining.
+    ///
+    /// Converts `estimatedTimeRemaining` to a user-friendly string format:
+    /// - Under 60 seconds: "42s"
+    /// - Under 1 hour: "5m 30s"
+    /// - 1 hour or more: "2h 15m"
+    ///
+    /// Returns `nil` if `estimatedTimeRemaining` is not available.
+    ///
+    /// ## Example
+    /// ```swift
+    /// let progress = DownloadProgress(
+    ///     bytesDownloaded: 500_000_000,
+    ///     totalBytes: 2_000_000_000,
+    ///     estimatedTimeRemaining: 150  // 2.5 minutes
+    /// )
+    /// print(progress.formattedETA)  // Optional("2m 30s")
+    /// ```
+    public var formattedETA: String? {
+        guard let eta = estimatedTimeRemaining, eta >= 0 else { return nil }
+
+        if eta < 60 {
+            return "\(Int(eta))s"
+        } else if eta < 3600 {
+            let minutes = Int(eta) / 60
+            let seconds = Int(eta) % 60
+            return "\(minutes)m \(seconds)s"
+        } else {
+            let hours = Int(eta) / 3600
+            let minutes = (Int(eta) % 3600) / 60
+            return "\(hours)h \(minutes)m"
+        }
+    }
+
+    /// Formatted download speed string.
+    ///
+    /// Converts `bytesPerSecond` to a human-readable format with appropriate
+    /// unit (B/s, KB/s, MB/s, GB/s).
+    ///
+    /// Returns `nil` if speed is not available.
+    ///
+    /// ## Example
+    /// ```swift
+    /// let progress = DownloadProgress(bytesPerSecond: 5_000_000)
+    /// print(progress.formattedSpeed)  // Optional("5.00 MB/s")
+    /// ```
+    public var formattedSpeed: String? {
+        guard let speed = bytesPerSecond, speed >= 0 else { return nil }
+
+        let kb = 1024.0
+        let mb = kb * 1024
+        let gb = mb * 1024
+
+        if speed < kb {
+            return String(format: "%.0f B/s", speed)
+        } else if speed < mb {
+            return String(format: "%.1f KB/s", speed / kb)
+        } else if speed < gb {
+            return String(format: "%.2f MB/s", speed / mb)
+        } else {
+            return String(format: "%.2f GB/s", speed / gb)
+        }
+    }
+
     /// Progress as a fraction between 0.0 and 1.0.
     ///
     /// This is calculated from either:

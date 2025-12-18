@@ -29,6 +29,8 @@ import Foundation
 /// - `highPerformance`: Large prefill steps for maximum throughput
 /// - `m1Optimized`: Tuned for M1 chips (~8GB RAM)
 /// - `mProOptimized`: Tuned for M1/M2/M3 Pro/Max (~16-32GB RAM)
+/// - `lowMemory`: Aggressively limits memory and caching (4GB, 1 model)
+/// - `multiModel`: Optimized for multi-model workflows (5 models, no limit)
 ///
 /// ## Protocol Conformances
 /// - `Sendable`: Thread-safe across concurrency boundaries
@@ -90,6 +92,34 @@ public struct MLXConfiguration: Sendable, Hashable {
     /// - Default: 4
     public var kvQuantizationBits: Int
 
+    // MARK: - Model Cache Configuration
+
+    /// Maximum number of models to keep in cache.
+    ///
+    /// Controls how many loaded models are retained in memory.
+    /// When exceeded, least recently used models are evicted.
+    ///
+    /// - Note: Default is 3.
+    ///
+    /// ## Usage
+    /// ```swift
+    /// let config = MLXConfiguration.default.maxCachedModels(5)
+    /// ```
+    public var maxCachedModels: Int
+
+    /// Maximum total memory for cached models.
+    ///
+    /// If `nil`, no limit is imposed on total cache size.
+    /// When exceeded, models are evicted to free memory.
+    ///
+    /// - Note: Default is `nil` (no limit).
+    ///
+    /// ## Usage
+    /// ```swift
+    /// let config = MLXConfiguration.default.maxCacheSize(.gigabytes(8))
+    /// ```
+    public var maxCacheSize: ByteCount?
+
     // MARK: - Initialization
 
     /// Creates an MLX configuration with the specified parameters.
@@ -101,13 +131,17 @@ public struct MLXConfiguration: Sendable, Hashable {
     ///   - prefillStepSize: Tokens per prefill step (default: 512).
     ///   - useQuantizedKVCache: Use compressed KV cache (default: false).
     ///   - kvQuantizationBits: Bit depth for quantization, 4 or 8 (default: 4).
+    ///   - maxCachedModels: Maximum number of models to keep in cache (default: 3).
+    ///   - maxCacheSize: Maximum total memory for cached models (default: nil).
     public init(
         memoryLimit: ByteCount? = nil,
         useMemoryMapping: Bool = true,
         kvCacheLimit: Int? = nil,
         prefillStepSize: Int = 512,
         useQuantizedKVCache: Bool = false,
-        kvQuantizationBits: Int = 4
+        kvQuantizationBits: Int = 4,
+        maxCachedModels: Int = 3,
+        maxCacheSize: ByteCount? = nil
     ) {
         self.memoryLimit = memoryLimit
         self.useMemoryMapping = useMemoryMapping
@@ -115,6 +149,8 @@ public struct MLXConfiguration: Sendable, Hashable {
         self.prefillStepSize = max(1, prefillStepSize)
         self.useQuantizedKVCache = useQuantizedKVCache
         self.kvQuantizationBits = max(4, min(8, kvQuantizationBits)) // Clamp to valid range
+        self.maxCachedModels = maxCachedModels
+        self.maxCacheSize = maxCacheSize
     }
 
     // MARK: - Static Presets
@@ -204,6 +240,48 @@ public struct MLXConfiguration: Sendable, Hashable {
         memoryLimit: .gigabytes(12),
         prefillStepSize: 512,
         useQuantizedKVCache: false
+    )
+
+    /// Configuration optimized for low memory devices.
+    ///
+    /// Aggressively limits memory usage for devices with constrained resources.
+    /// Caches only one model and enforces a strict memory limit.
+    ///
+    /// ## Configuration
+    /// - memoryLimit: 4 GB
+    /// - useQuantizedKVCache: true
+    /// - kvQuantizationBits: 4
+    /// - maxCachedModels: 1
+    /// - maxCacheSize: 4 GB
+    ///
+    /// ## Usage
+    /// ```swift
+    /// let provider = MLXProvider(configuration: .lowMemory)
+    /// ```
+    public static let lowMemory = MLXConfiguration(
+        memoryLimit: .gigabytes(4),
+        useQuantizedKVCache: true,
+        kvQuantizationBits: 4,
+        maxCachedModels: 1,
+        maxCacheSize: .gigabytes(4)
+    )
+
+    /// Configuration for multi-model workflows.
+    ///
+    /// Allows caching multiple models simultaneously without size limits.
+    /// Good for applications that switch between different models frequently.
+    ///
+    /// ## Configuration
+    /// - maxCachedModels: 5
+    /// - maxCacheSize: nil (no limit)
+    ///
+    /// ## Usage
+    /// ```swift
+    /// let provider = MLXProvider(configuration: .multiModel)
+    /// ```
+    public static let multiModel = MLXConfiguration(
+        maxCachedModels: 5,
+        maxCacheSize: nil
     )
 }
 
@@ -303,5 +381,55 @@ extension MLXConfiguration {
         var copy = self
         copy.useQuantizedKVCache = false
         return copy
+    }
+
+    /// Returns a copy with the specified maximum number of cached models.
+    ///
+    /// ## Usage
+    /// ```swift
+    /// let config = MLXConfiguration.default.maxCachedModels(5)
+    /// ```
+    ///
+    /// - Parameter count: Maximum number of models to keep in cache.
+    /// - Returns: A new configuration with the updated cache limit.
+    public func maxCachedModels(_ count: Int) -> MLXConfiguration {
+        var copy = self
+        copy.maxCachedModels = count
+        return copy
+    }
+
+    /// Returns a copy with the specified maximum cache size.
+    ///
+    /// ## Usage
+    /// ```swift
+    /// let config = MLXConfiguration.default.maxCacheSize(.gigabytes(8))
+    /// ```
+    ///
+    /// - Parameter size: Maximum total memory for cached models, or `nil` for no limit.
+    /// - Returns: A new configuration with the updated cache size limit.
+    public func maxCacheSize(_ size: ByteCount?) -> MLXConfiguration {
+        var copy = self
+        copy.maxCacheSize = size
+        return copy
+    }
+
+    /// Creates cache configuration from provider configuration.
+    ///
+    /// Converts this MLXConfiguration into an MLXModelCache.Configuration
+    /// for initializing the model cache.
+    ///
+    /// ## Usage
+    /// ```swift
+    /// let config = MLXConfiguration.lowMemory
+    /// let cacheConfig = config.cacheConfiguration()
+    /// let cache = MLXModelCache(configuration: cacheConfig)
+    /// ```
+    ///
+    /// - Returns: A cache configuration with matching settings.
+    public func cacheConfiguration() -> MLXModelCache.Configuration {
+        MLXModelCache.Configuration(
+            maxCachedModels: maxCachedModels,
+            maxCacheSize: maxCacheSize
+        )
     }
 }

@@ -136,10 +136,8 @@ public actor ModelManager {
     ///     print("\(model.identifier.displayName): \(model.size.formatted)")
     /// }
     /// ```
-    public func cachedModels() async -> [CachedModelInfo] {
-        guard let cache = try? await ensureCache() else {
-            return []
-        }
+    public func cachedModels() async throws -> [CachedModelInfo] {
+        let cache = try await ensureCache()
         return await cache.allCachedModels()
     }
 
@@ -570,6 +568,169 @@ public actor ModelManager {
     }
 }
 
+// MARK: - Size Estimation
+
+extension ModelManager {
+
+    /// Estimates the download size before starting a download.
+    ///
+    /// Uses the HuggingFace API to calculate the total size of files that would
+    /// be downloaded. This allows UI to show accurate progress and help users
+    /// understand storage requirements.
+    ///
+    /// - Parameter model: The model to estimate size for.
+    /// - Returns: Estimated size in bytes, or `nil` if estimation failed or unavailable.
+    ///
+    /// ## Example
+    /// ```swift
+    /// if let size = await ModelManager.shared.estimateDownloadSize(.llama3_2_1B) {
+    ///     print("Download size: \(ByteCount(size).formatted)")
+    ///
+    ///     // Check available storage
+    ///     let available = try FileManager.default.availableCapacity(forUsage: .opportunistic)
+    ///     if available < size {
+    ///         print("Warning: Insufficient storage space")
+    ///     }
+    /// }
+    /// ```
+    public func estimateDownloadSize(_ model: ModelIdentifier) async -> ByteCount? {
+        // Foundation Models are system-managed, no download needed
+        if case .foundationModels = model {
+            return nil
+        }
+
+        let repoId = model.rawValue
+        guard let totalBytes = await HFMetadataService.shared.estimateTotalSize(
+            repoId: repoId,
+            patterns: HFMetadataService.mlxFilePatterns
+        ) else {
+            return nil
+        }
+
+        return ByteCount(totalBytes)
+    }
+
+    /// Downloads a model with pre-fetched size estimation for accurate progress.
+    ///
+    /// This method first estimates the download size, then uses it to provide
+    /// accurate progress reporting including byte counts and ETA.
+    ///
+    /// - Parameters:
+    ///   - model: The model to download.
+    ///   - progress: Optional callback for progress updates with accurate total size.
+    /// - Returns: The local URL where the model was saved.
+    /// - Throws: `AIError` if the download fails.
+    ///
+    /// ## Example
+    /// ```swift
+    /// let url = try await ModelManager.shared.downloadWithEstimation(.llama3_2_1B) { progress in
+    ///     print("Progress: \(progress.percentComplete)%")
+    ///     if let eta = progress.formattedETA {
+    ///         print("ETA: \(eta)")
+    ///     }
+    ///     if let speed = progress.formattedSpeed {
+    ///         print("Speed: \(speed)")
+    ///     }
+    /// }
+    /// ```
+    public func downloadWithEstimation(
+        _ model: ModelIdentifier,
+        progress: (@Sendable (DownloadProgress) -> Void)? = nil
+    ) async throws -> URL {
+        // Pre-fetch estimated size
+        let estimatedSize = await estimateDownloadSize(model)
+
+        // Create speed calculator for this download
+        let speedCalculator = SpeedCalculator()
+
+        // Wrap progress callback with size and speed enrichment
+        let enrichedProgress: (@Sendable (DownloadProgress) -> Void)? = progress.map { callback in
+            { downloadProgress in
+                var enriched = downloadProgress
+
+                // Set total bytes from estimation if not provided
+                if enriched.totalBytes == nil {
+                    enriched.totalBytes = estimatedSize?.bytes
+                }
+
+                // Add speed sample and calculate
+                Task {
+                    await speedCalculator.addSample(bytes: enriched.bytesDownloaded)
+                    if let speed = await speedCalculator.averageSpeed() {
+                        enriched.bytesPerSecond = speed
+
+                        // Calculate ETA
+                        if let total = enriched.totalBytes, speed > 0 {
+                            let remaining = total - enriched.bytesDownloaded
+                            enriched.estimatedTimeRemaining = TimeInterval(remaining) / speed
+                        }
+                    }
+                }
+
+                callback(enriched)
+            }
+        }
+
+        return try await download(model, progress: enrichedProgress)
+    }
+
+    /// Downloads a model after validating MLX compatibility.
+    ///
+    /// This method validates the model's compatibility with MLX before downloading,
+    /// preventing wasted bandwidth and storage on incompatible models.
+    ///
+    /// - Parameters:
+    ///   - model: The model to download.
+    ///   - skipValidation: If `true`, skips compatibility validation. Defaults to `false`.
+    ///   - progress: Optional callback for progress updates.
+    /// - Returns: The local URL where the model was saved.
+    /// - Throws: `AIError.incompatibleModel` if validation fails, or other `AIError` on download failure.
+    ///
+    /// ## Example
+    /// ```swift
+    /// do {
+    ///     let url = try await ModelManager.shared.downloadValidated(.llama3_2_1B)
+    ///     print("Downloaded to: \(url)")
+    /// } catch AIError.incompatibleModel(let model, let reasons) {
+    ///     print("Cannot download \(model.rawValue):")
+    ///     for reason in reasons {
+    ///         print("  - \(reason)")
+    ///     }
+    /// }
+    /// ```
+    public func downloadValidated(
+        _ model: ModelIdentifier,
+        skipValidation: Bool = false,
+        progress: (@Sendable (DownloadProgress) -> Void)? = nil
+    ) async throws -> URL {
+        // Skip validation for non-MLX models
+        guard case .mlx = model else {
+            return try await downloadWithEstimation(model, progress: progress)
+        }
+
+        if !skipValidation {
+            let result = await MLXCompatibilityChecker.shared.checkCompatibility(model)
+
+            switch result {
+            case .compatible:
+                break  // Proceed with download
+
+            case .incompatible(let reasons):
+                throw AIError.incompatibleModel(
+                    model: model,
+                    reasons: reasons.map { $0.description }
+                )
+
+            case .unknown(let error):
+                // Log warning but allow download attempt
+                print("Warning: Could not validate compatibility for \(model.rawValue): \(error?.localizedDescription ?? "unknown")")
+            }
+        }
+
+        return try await downloadWithEstimation(model, progress: progress)
+    }
+}
+
 // MARK: - Convenience Extensions
 
 extension ModelManager {
@@ -577,7 +738,7 @@ extension ModelManager {
     /// Returns the number of cached models.
     public var cachedModelCount: Int {
         get async {
-            await cachedModels().count
+            (try? await cachedModels())?.count ?? 0
         }
     }
 
