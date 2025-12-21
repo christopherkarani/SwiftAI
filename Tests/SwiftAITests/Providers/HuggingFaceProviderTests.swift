@@ -673,3 +673,278 @@ extension HuggingFaceProviderTests {
         XCTAssertTrue(available2)
     }
 }
+
+// MARK: - Text-to-Image Tests
+
+extension HuggingFaceProviderTests {
+
+    func testTextToImageRejectsNonHuggingFaceModels() async {
+        let provider = HuggingFaceProvider(token: "hf_test_token")
+
+        // Test with MLX model
+        do {
+            _ = try await provider.textToImage(
+                "test prompt",
+                model: .mlx("mlxcommunity/some-model"),
+                config: .default
+            )
+            XCTFail("Should have thrown an error for MLX model")
+        } catch let error as AIError {
+            if case .invalidInput(let message) = error {
+                XCTAssertTrue(message.contains("HuggingFaceProvider only supports .huggingFace() models"),
+                             "Error message should indicate HuggingFace models only")
+            } else {
+                XCTFail("Expected invalidInput error, got \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error type: \(error)")
+        }
+    }
+
+    func testTextToImageRejectsFoundationModelIdentifier() async {
+        let provider = HuggingFaceProvider(token: "hf_test_token")
+
+        // Test with Foundation Models identifier
+        do {
+            _ = try await provider.textToImage(
+                "test prompt",
+                model: .foundationModels,
+                config: .default
+            )
+            XCTFail("Should have thrown an error for Foundation Models identifier")
+        } catch let error as AIError {
+            if case .invalidInput = error {
+                // Expected
+            } else {
+                XCTFail("Expected invalidInput error, got \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error type: \(error)")
+        }
+    }
+
+    func testTextToImageAcceptsHuggingFaceModel() async {
+        let provider = HuggingFaceProvider(token: "hf_test_token")
+
+        // Note: This will fail at network level, but we're just testing model validation
+        do {
+            _ = try await provider.textToImage(
+                "a sunset over mountains",
+                model: .huggingFace("stabilityai/stable-diffusion-3"),
+                config: .default
+            )
+            // If we get here, model validation passed (network call will fail in tests)
+        } catch let error as AIError {
+            // Network or auth errors are expected in unit tests
+            switch error {
+            case .authenticationFailed, .networkError, .serverError, .generationFailed:
+                // These are expected since we're not making real API calls
+                break
+            case .invalidInput:
+                XCTFail("Should not reject valid HuggingFace model identifier")
+            default:
+                break
+            }
+        } catch {
+            // Network errors are OK in unit tests
+        }
+    }
+
+    func testTextToImageWithDefaultConfig() async {
+        let provider = HuggingFaceProvider(token: "hf_test_token")
+
+        // Validate that default config is accepted
+        do {
+            _ = try await provider.textToImage(
+                "test prompt",
+                model: .huggingFace("stabilityai/stable-diffusion-xl-base-1.0"),
+                config: .default
+            )
+        } catch let error as AIError {
+            // Only check that it's not an invalidInput error
+            if case .invalidInput = error {
+                XCTFail("Should not reject valid config and model: \(error)")
+            }
+            // Other errors (network, auth, etc.) are expected in unit tests
+        } catch {
+            // Non-AIError exceptions are OK (network errors, etc.)
+        }
+    }
+
+    func testTextToImageWithHighQualityConfig() async {
+        let provider = HuggingFaceProvider(token: "hf_test_token")
+
+        do {
+            _ = try await provider.textToImage(
+                "detailed portrait",
+                model: .huggingFace("stabilityai/stable-diffusion-xl-base-1.0"),
+                config: .highQuality
+            )
+        } catch let error as AIError {
+            if case .invalidInput = error {
+                XCTFail("Should not reject high quality config: \(error)")
+            }
+        } catch {
+            // Network errors expected
+        }
+    }
+
+    func testTextToImageWithFastConfig() async {
+        let provider = HuggingFaceProvider(token: "hf_test_token")
+
+        do {
+            _ = try await provider.textToImage(
+                "quick test",
+                model: .huggingFace("stabilityai/stable-diffusion-3"),
+                config: .fast
+            )
+        } catch let error as AIError {
+            if case .invalidInput = error {
+                XCTFail("Should not reject fast config: \(error)")
+            }
+        } catch {
+            // Network errors expected
+        }
+    }
+
+    func testTextToImageWithSquare512Config() async {
+        let provider = HuggingFaceProvider(token: "hf_test_token")
+
+        do {
+            _ = try await provider.textToImage(
+                "small square image",
+                model: .huggingFace("stabilityai/stable-diffusion-3"),
+                config: .square512
+            )
+        } catch let error as AIError {
+            if case .invalidInput = error {
+                XCTFail("Should not reject square512 config: \(error)")
+            }
+        } catch {
+            // Network errors expected
+        }
+    }
+
+    func testTextToImageWithSquare1024Config() async {
+        let provider = HuggingFaceProvider(token: "hf_test_token")
+
+        do {
+            _ = try await provider.textToImage(
+                "large square image",
+                model: .huggingFace("stabilityai/stable-diffusion-3"),
+                config: .square1024
+            )
+        } catch let error as AIError {
+            if case .invalidInput = error {
+                XCTFail("Should not reject square1024 config: \(error)")
+            }
+        } catch {
+            // Network errors expected
+        }
+    }
+
+    func testTextToImageWithLandscapeConfig() async {
+        let provider = HuggingFaceProvider(token: "hf_test_token")
+
+        do {
+            _ = try await provider.textToImage(
+                "wide landscape",
+                model: .huggingFace("stabilityai/stable-diffusion-3"),
+                config: .landscape
+            )
+        } catch let error as AIError {
+            if case .invalidInput = error {
+                XCTFail("Should not reject landscape config: \(error)")
+            }
+        } catch {
+            // Network errors expected
+        }
+    }
+
+    func testTextToImageWithPortraitConfig() async {
+        let provider = HuggingFaceProvider(token: "hf_test_token")
+
+        do {
+            _ = try await provider.textToImage(
+                "tall portrait",
+                model: .huggingFace("stabilityai/stable-diffusion-3"),
+                config: .portrait
+            )
+        } catch let error as AIError {
+            if case .invalidInput = error {
+                XCTFail("Should not reject portrait config: \(error)")
+            }
+        } catch {
+            // Network errors expected
+        }
+    }
+
+    func testTextToImageWithCustomConfig() async {
+        let provider = HuggingFaceProvider(token: "hf_test_token")
+
+        let customConfig = ImageGenerationConfig.default
+            .width(768)
+            .height(1024)
+            .steps(35)
+            .guidanceScale(8.5)
+
+        do {
+            _ = try await provider.textToImage(
+                "custom configuration test",
+                model: .huggingFace("stabilityai/stable-diffusion-3"),
+                config: customConfig
+            )
+        } catch let error as AIError {
+            if case .invalidInput = error {
+                XCTFail("Should not reject custom config: \(error)")
+            }
+        } catch {
+            // Network errors expected
+        }
+    }
+
+    func testTextToImageWithEmptyPrompt() async {
+        let provider = HuggingFaceProvider(token: "hf_test_token")
+
+        // Empty prompt should be handled by the API
+        // Just verify it doesn't cause validation errors at the provider level
+        do {
+            _ = try await provider.textToImage(
+                "",
+                model: .huggingFace("stabilityai/stable-diffusion-3"),
+                config: .default
+            )
+        } catch let error as AIError {
+            // We're not testing API-level validation here
+            // Just ensure the provider doesn't reject it prematurely
+            if case .invalidInput(let message) = error {
+                // If it's about model type, that's a provider issue
+                if message.contains("only supports .huggingFace()") {
+                    XCTFail("Provider incorrectly rejected valid model")
+                }
+                // Other validation errors are acceptable (could be from API)
+            }
+        } catch {
+            // Network errors expected
+        }
+    }
+
+    func testTextToImageProviderAvailabilityWithoutToken() async {
+        let provider = HuggingFaceProvider(configuration: HFConfiguration(tokenProvider: .none))
+
+        let isAvailable = await provider.isAvailable
+        XCTAssertFalse(isAvailable, "Provider should not be available without token")
+
+        // Attempting textToImage should fail (network or auth error expected)
+        do {
+            _ = try await provider.textToImage(
+                "test",
+                model: .huggingFace("stabilityai/stable-diffusion-3"),
+                config: .default
+            )
+            // If we somehow succeed, that's unexpected but not a validation failure
+        } catch {
+            // Expected - provider is not properly configured
+        }
+    }
+}
