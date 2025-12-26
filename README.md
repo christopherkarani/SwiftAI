@@ -13,16 +13,18 @@ SwiftAI provides a clean, idiomatic Swift interface for LLM inference. Choose yo
 
 ## Features
 
-| Capability | MLX | HuggingFace | Foundation Models |
-|:-----------|:---:|:-----------:|:-----------------:|
-| Text Generation | ✓ | ✓ | ✓ |
-| Streaming | ✓ | ✓ | ✓ |
-| Embeddings | — | ✓ | — |
-| Transcription | — | ✓ | — |
-| Image Generation | — | ✓ | — |
-| Token Counting | ✓ | — | — |
-| Offline | ✓ | — | ✓ |
-| Privacy | ✓ | — | ✓ |
+| Capability | MLX | HuggingFace | Anthropic | Foundation Models |
+|:-----------|:---:|:-----------:|:---------:|:-----------------:|
+| Text Generation | ✓ | ✓ | ✓ | ✓ |
+| Streaming | ✓ | ✓ | ✓ | ✓ |
+| Vision | — | — | ✓ | — |
+| Extended Thinking | — | — | ✓ | — |
+| Embeddings | — | ✓ | — | — |
+| Transcription | — | ✓ | — | — |
+| Image Generation | — | ✓ | — | — |
+| Token Counting | ✓ | — | — | — |
+| Offline | ✓ | — | — | ✓ |
+| Privacy | ✓ | — | — | ✓ |
 
 ## Installation
 
@@ -234,6 +236,89 @@ if #available(iOS 26.0, *) {
 }
 ```
 
+### Anthropic Claude
+
+SwiftAI includes first-class support for Anthropic's Claude models via the Anthropic API.
+
+**Best for:** Advanced reasoning, vision tasks, extended thinking, production applications
+
+**Setup:**
+```bash
+export ANTHROPIC_API_KEY=sk-ant-api-03-...
+```
+
+```swift
+import SwiftAI
+
+// Simple generation
+let provider = AnthropicProvider(apiKey: "sk-ant-...")
+let response = try await provider.generate(
+    "Explain quantum computing",
+    model: .claudeSonnet45,
+    config: .default.maxTokens(500)
+)
+
+// Streaming
+for try await chunk in provider.stream(
+    "Write a poem about Swift",
+    model: .claude3Haiku,
+    config: .default
+) {
+    print(chunk, terminator: "")
+}
+```
+
+**Available Models:**
+
+| Model | ID | Best For |
+|-------|----|----|
+| Claude Opus 4.5 | `.claudeOpus45` | Most capable, complex reasoning |
+| Claude Sonnet 4.5 | `.claudeSonnet45` | Balanced performance and speed |
+| Claude 3.5 Sonnet | `.claude35Sonnet` | Fast, high-quality responses |
+| Claude 3 Haiku | `.claude3Haiku` | Fastest, most cost-effective |
+
+**Features:**
+
+- Text generation (streaming and non-streaming)
+- Multi-turn conversations with context
+- Vision support (multimodal image+text)
+- Extended thinking mode for complex reasoning
+- Comprehensive error handling
+- Environment variable support (ANTHROPIC_API_KEY)
+
+**Vision Example:**
+
+```swift
+let messages = Messages {
+    Message.user([
+        .text("What's in this image?"),
+        .image(base64Data: imageData, mimeType: "image/jpeg")
+    ])
+}
+
+let result = try await provider.generate(
+    messages: messages,
+    model: .claudeSonnet45,
+    config: .default
+)
+```
+
+**Extended Thinking:**
+
+```swift
+var config = AnthropicConfiguration.standard(apiKey: "sk-ant-...")
+config.thinkingConfig = .standard
+
+let provider = AnthropicProvider(configuration: config)
+let result = try await provider.generate(
+    "Solve this complex problem...",
+    model: .claudeOpus45,
+    config: .default
+)
+```
+
+Get your API key at: https://console.anthropic.com/
+
 ---
 
 ## Core Concepts
@@ -252,6 +337,12 @@ SwiftAI requires explicit model selection—no magic auto-detection:
 // HuggingFace models (cloud)
 .huggingFace("meta-llama/Llama-3.1-70B-Instruct")
 .huggingFace("sentence-transformers/all-MiniLM-L6-v2")
+
+// Anthropic models (cloud)
+.claudeOpus45
+.claudeSonnet45
+.claude35Sonnet
+.claude3Haiku
 
 // Foundation Models (iOS 26+)
 .foundationModels
