@@ -267,6 +267,11 @@ extension AnthropicProvider {
         config: GenerateConfig,
         continuation: AsyncThrowingStream<GenerationChunk, Error>.Continuation
     ) async throws {
+        // Validate input
+        guard !messages.isEmpty else {
+            throw AIError.invalidInput("Messages array cannot be empty")
+        }
+
         // Build request with stream=true
         let request = buildRequestBody(messages: messages, model: model, config: config, stream: true)
 

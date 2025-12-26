@@ -140,8 +140,8 @@ extension AnthropicProvider {
             messages: apiMessages,
             maxTokens: config.maxTokens ?? 1024,
             system: systemPrompt,
-            temperature: config.temperature > 0 ? Double(config.temperature) : nil,
-            topP: config.topP > 0 && config.topP < 1 ? Double(config.topP) : nil,
+            temperature: config.temperature >= 0 ? Double(config.temperature) : nil,
+            topP: (config.topP > 0 && config.topP <= 1) ? Double(config.topP) : nil,
             topK: config.topK,
             stream: stream ? true : nil,
             thinking: thinkingRequest
@@ -409,21 +409,16 @@ extension AnthropicProvider {
         _ response: AnthropicMessagesResponse,
         startTime: Date
     ) -> GenerationResult {
-        // Separate thinking blocks from text blocks
-        // Note: Thinking blocks contain internal reasoning and are not shown to the user
-        _ = response.content
-            .filter { $0.type == "thinking" }
-            .compactMap { $0.text }
-            .joined(separator: "\n")
-
+        // Extract text blocks for the final response
+        // Note: Thinking blocks (type="thinking") contain internal reasoning
+        // and are filtered out, as they are not part of the user-facing response
         let responseText = response.content
             .filter { $0.type == "text" }
             .compactMap { $0.text }
             .joined()
 
-        // Return only the response text
-        // Thinking is internal reasoning and not shown to the user
-        // Future enhancement: could expose thinking via metadata
+        // Future enhancement: thinking blocks could be exposed via GenerationResult metadata
+        // Example: response.content.filter { $0.type == "thinking" }.compactMap { $0.text }
         let text = responseText
 
         // Calculate performance metrics
