@@ -156,6 +156,30 @@ public struct GenerateConfig: Sendable, Hashable, Codable {
     /// ```
     public var topLogprobs: Int?
 
+    // MARK: - Provider Analytics
+
+    /// User ID for tracking usage per user in provider analytics.
+    ///
+    /// When set, allows tracking usage and costs by user in provider
+    /// dashboards (e.g., Anthropic console).
+    ///
+    /// ## Usage
+    /// ```swift
+    /// let config = GenerateConfig.default.userId("user_12345")
+    /// ```
+    public var userId: String?
+
+    /// Service tier selection for capacity management.
+    ///
+    /// Controls routing priority for the request. Some providers
+    /// offer different service tiers with varying capacity guarantees.
+    ///
+    /// ## Usage
+    /// ```swift
+    /// let config = GenerateConfig.default.serviceTier(.auto)
+    /// ```
+    public var serviceTier: ServiceTier?
+
     // MARK: - Initialization
 
     /// Creates a generation configuration with the specified parameters.
@@ -173,6 +197,8 @@ public struct GenerateConfig: Sendable, Hashable, Codable {
     ///   - seed: Random seed for reproducibility (default: nil).
     ///   - returnLogprobs: Whether to return log probabilities (default: false).
     ///   - topLogprobs: Number of top logprobs per token (default: nil).
+    ///   - userId: User ID for per-user usage tracking (default: nil).
+    ///   - serviceTier: Service tier for capacity management (default: nil).
     public init(
         maxTokens: Int? = 1024,
         minTokens: Int? = nil,
@@ -185,7 +211,9 @@ public struct GenerateConfig: Sendable, Hashable, Codable {
         stopSequences: [String] = [],
         seed: UInt64? = nil,
         returnLogprobs: Bool = false,
-        topLogprobs: Int? = nil
+        topLogprobs: Int? = nil,
+        userId: String? = nil,
+        serviceTier: ServiceTier? = nil
     ) {
         self.maxTokens = maxTokens
         self.minTokens = minTokens
@@ -199,6 +227,8 @@ public struct GenerateConfig: Sendable, Hashable, Codable {
         self.seed = seed
         self.returnLogprobs = returnLogprobs
         self.topLogprobs = topLogprobs
+        self.userId = userId
+        self.serviceTier = serviceTier
     }
 
     // MARK: - Static Presets
@@ -459,4 +489,65 @@ extension GenerateConfig {
         copy.topLogprobs = top
         return copy
     }
+
+    /// Returns a copy with the specified user ID for tracking.
+    ///
+    /// ## Usage
+    /// ```swift
+    /// let config = GenerateConfig.default.userId("user_12345")
+    /// ```
+    ///
+    /// - Parameter id: User ID for per-user usage tracking.
+    /// - Returns: A new configuration with the updated user ID.
+    public func userId(_ id: String) -> GenerateConfig {
+        var copy = self
+        copy.userId = id
+        return copy
+    }
+
+    /// Returns a copy with the specified service tier.
+    ///
+    /// ## Usage
+    /// ```swift
+    /// let config = GenerateConfig.default.serviceTier(.auto)
+    /// ```
+    ///
+    /// - Parameter tier: Service tier for capacity management.
+    /// - Returns: A new configuration with the updated service tier.
+    public func serviceTier(_ tier: ServiceTier) -> GenerateConfig {
+        var copy = self
+        copy.serviceTier = tier
+        return copy
+    }
+}
+
+// MARK: - ServiceTier
+
+/// API service tier options for capacity management.
+///
+/// Some providers offer different service tiers that control
+/// routing priority and capacity guarantees for requests.
+///
+/// ## Usage
+/// ```swift
+/// let config = GenerateConfig.default.serviceTier(.auto)
+/// ```
+///
+/// ## Provider Support
+/// - **Anthropic**: Supports `auto` and `standardOnly`
+/// - **Other providers**: May ignore this setting
+public enum ServiceTier: String, Sendable, Hashable, Codable {
+
+    /// Automatic tier selection (default).
+    ///
+    /// The provider automatically selects the best available
+    /// tier based on current capacity and account settings.
+    case auto = "auto"
+
+    /// Standard capacity only.
+    ///
+    /// Disables priority routing and uses only standard capacity.
+    /// This may result in slower response times during high load
+    /// but ensures consistent behavior.
+    case standardOnly = "standard_only"
 }

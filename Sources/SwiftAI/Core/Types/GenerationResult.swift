@@ -40,6 +40,9 @@ public struct GenerationResult: Sendable, Hashable {
     /// Usage statistics (if available from provider).
     public let usage: UsageStats?
 
+    /// Rate limit information (if available from provider).
+    public let rateLimitInfo: RateLimitInfo?
+
     /// Creates a generation result.
     ///
     /// - Parameters:
@@ -50,6 +53,7 @@ public struct GenerationResult: Sendable, Hashable {
     ///   - finishReason: Why generation stopped.
     ///   - logprobs: Optional log probabilities.
     ///   - usage: Optional usage statistics.
+    ///   - rateLimitInfo: Optional rate limit information.
     public init(
         text: String,
         tokenCount: Int,
@@ -57,7 +61,8 @@ public struct GenerationResult: Sendable, Hashable {
         tokensPerSecond: Double,
         finishReason: FinishReason,
         logprobs: [TokenLogprob]? = nil,
-        usage: UsageStats? = nil
+        usage: UsageStats? = nil,
+        rateLimitInfo: RateLimitInfo? = nil
     ) {
         self.text = text
         self.tokenCount = tokenCount
@@ -66,6 +71,7 @@ public struct GenerationResult: Sendable, Hashable {
         self.finishReason = finishReason
         self.logprobs = logprobs
         self.usage = usage
+        self.rateLimitInfo = rateLimitInfo
     }
 
     // MARK: - Factory Methods
@@ -97,6 +103,7 @@ extension GenerationResult {
         hasher.combine(tokensPerSecond)
         hasher.combine(finishReason)
         hasher.combine(usage)
+        hasher.combine(rateLimitInfo)
     }
 
     public static func == (lhs: GenerationResult, rhs: GenerationResult) -> Bool {
@@ -105,6 +112,7 @@ extension GenerationResult {
         lhs.generationTime == rhs.generationTime &&
         lhs.tokensPerSecond == rhs.tokensPerSecond &&
         lhs.finishReason == rhs.finishReason &&
-        lhs.usage == rhs.usage
+        lhs.usage == rhs.usage &&
+        lhs.rateLimitInfo == rhs.rateLimitInfo
     }
 }

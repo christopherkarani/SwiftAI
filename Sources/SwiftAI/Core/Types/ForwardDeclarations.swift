@@ -83,6 +83,12 @@ public enum ProviderType: String, Sendable, Codable, CaseIterable {
     /// Best for: Cross-platform local inference, model sharing.
     case ollama
 
+    /// Anthropic API (cloud).
+    ///
+    /// Connects to Anthropic's hosted Claude models.
+    /// Best for: Access to Claude 3/4 models, advanced reasoning.
+    case anthropic
+
     /// Azure OpenAI Service (cloud).
     ///
     /// Microsoft's enterprise OpenAI deployment.
@@ -104,6 +110,8 @@ public enum ProviderType: String, Sendable, Codable, CaseIterable {
             return "OpenRouter"
         case .ollama:
             return "Ollama (Local)"
+        case .anthropic:
+            return "Anthropic"
         case .azure:
             return "Azure OpenAI"
         }
@@ -117,7 +125,7 @@ public enum ProviderType: String, Sendable, Codable, CaseIterable {
         switch self {
         case .mlx, .foundationModels, .ollama:
             return false
-        case .huggingFace, .openAI, .openRouter, .azure:
+        case .huggingFace, .openAI, .openRouter, .anthropic, .azure:
             return true
         }
     }

@@ -65,6 +65,12 @@ public enum AIError: Error, Sendable, LocalizedError, CustomStringConvertible {
     /// API key is invalid, expired, or missing.
     case authenticationFailed(String)
 
+    /// Payment or billing issue with the API.
+    ///
+    /// The account has billing issues such as insufficient credits,
+    /// expired payment method, or unpaid invoices (HTTP 402).
+    case billingError(String)
+
     /// The model variant is not supported by the provider.
     ///
     /// This occurs when attempting to use a model variant that the provider
@@ -208,6 +214,9 @@ public enum AIError: Error, Sendable, LocalizedError, CustomStringConvertible {
         case .authenticationFailed(let message):
             return "Authentication failed: \(message)"
 
+        case .billingError(let message):
+            return "Billing error: \(message). Please check your payment method."
+
         case .unsupportedModel(let variant, let reason):
             return "Unsupported model variant '\(variant)': \(reason)"
 
@@ -293,6 +302,9 @@ public enum AIError: Error, Sendable, LocalizedError, CustomStringConvertible {
 
         case .authenticationFailed:
             return "Verify your API key is correct and has not expired."
+
+        case .billingError:
+            return "Update your payment method or add credits to your account."
 
         case .unsupportedModel:
             return "Use a supported model variant (e.g., .sdxlTurbo) or switch to a cloud provider for this model."
@@ -425,7 +437,7 @@ public enum AIError: Error, Sendable, LocalizedError, CustomStringConvertible {
         case .downloadFailed:
             return true
 
-        case .unsupportedPlatform, .modelNotLoaded:
+        case .unsupportedPlatform, .modelNotLoaded, .billingError:
             return false
 
         default:
@@ -477,7 +489,7 @@ extension AIError {
     public var category: ErrorCategory {
         switch self {
         case .providerUnavailable, .modelNotFound, .modelNotCached, .incompatibleModel,
-             .authenticationFailed, .unsupportedPlatform, .modelNotLoaded, .unsupportedModel:
+             .authenticationFailed, .billingError, .unsupportedPlatform, .modelNotLoaded, .unsupportedModel:
             return .provider
         case .generationFailed, .tokenLimitExceeded, .contentFiltered, .cancelled, .timeout:
             return .generation

@@ -39,4 +39,10 @@ public enum FinishReason: String, Sendable, Codable {
 
     /// Tool call requested (for future use).
     case toolCall = "tool_call"
+
+    /// Generation paused for long-running turns (can be resumed).
+    case pauseTurn = "pause_turn"
+
+    /// Model reached its context window limit.
+    case modelContextWindowExceeded = "model_context_window_exceeded"
 }

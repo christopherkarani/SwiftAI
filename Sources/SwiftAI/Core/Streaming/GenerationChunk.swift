@@ -46,6 +46,12 @@ public struct GenerationChunk: Sendable, Hashable {
     /// Timestamp when this chunk was generated.
     public let timestamp: Date
 
+    /// Usage statistics from the final message_delta event.
+    ///
+    /// Only populated in the final chunk when streaming completes.
+    /// Contains input and output token counts for the entire generation.
+    public let usage: UsageStats?
+
     /// Creates a generation chunk.
     ///
     /// - Parameters:
@@ -58,6 +64,7 @@ public struct GenerationChunk: Sendable, Hashable {
     ///   - isComplete: Whether this is the final chunk.
     ///   - finishReason: Reason generation stopped (for final chunk).
     ///   - timestamp: Chunk creation time (default: now).
+    ///   - usage: Optional usage statistics (for final chunk).
     public init(
         text: String,
         tokenCount: Int = 1,
@@ -67,7 +74,8 @@ public struct GenerationChunk: Sendable, Hashable {
         tokensPerSecond: Double? = nil,
         isComplete: Bool = false,
         finishReason: FinishReason? = nil,
-        timestamp: Date = Date()
+        timestamp: Date = Date(),
+        usage: UsageStats? = nil
     ) {
         self.text = text
         self.tokenCount = tokenCount
@@ -78,6 +86,7 @@ public struct GenerationChunk: Sendable, Hashable {
         self.isComplete = isComplete
         self.finishReason = finishReason
         self.timestamp = timestamp
+        self.usage = usage
     }
 
     // MARK: - Factory Methods
@@ -109,6 +118,7 @@ extension GenerationChunk {
         hasher.combine(isComplete)
         hasher.combine(finishReason)
         hasher.combine(timestamp)
+        hasher.combine(usage)
     }
 
     public static func == (lhs: GenerationChunk, rhs: GenerationChunk) -> Bool {
@@ -120,6 +130,7 @@ extension GenerationChunk {
         lhs.tokensPerSecond == rhs.tokensPerSecond &&
         lhs.isComplete == rhs.isComplete &&
         lhs.finishReason == rhs.finishReason &&
-        lhs.timestamp == rhs.timestamp
+        lhs.timestamp == rhs.timestamp &&
+        lhs.usage == rhs.usage
     }
 }
