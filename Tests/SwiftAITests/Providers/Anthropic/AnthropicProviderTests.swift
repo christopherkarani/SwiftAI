@@ -1,0 +1,532 @@
+// AnthropicProviderTests.swift
+// SwiftAI
+//
+// Unit tests for Anthropic provider components.
+
+import Testing
+import Foundation
+@testable import SwiftAI
+
+// MARK: - Configuration Tests
+
+@Suite("Anthropic Configuration Tests")
+struct AnthropicConfigurationTests {
+
+    @Test("Default configuration uses Anthropic endpoint")
+    func defaultConfiguration() {
+        let config = AnthropicConfiguration()
+        #expect(config.baseURL.absoluteString == "https://api.anthropic.com")
+        #expect(config.apiVersion == "2023-06-01")
+        #expect(config.timeout == 60.0)
+        #expect(config.maxRetries == 3)
+    }
+
+    @Test("Standard config with API key")
+    func standardConfig() {
+        let config = AnthropicConfiguration.standard(apiKey: "sk-ant-test")
+        #expect(config.authentication.apiKey == "sk-ant-test")
+        #expect(config.hasValidAuthentication == true)
+    }
+
+    @Test("Build headers includes X-Api-Key and anthropic-version")
+    func buildHeaders() {
+        let config = AnthropicConfiguration.standard(apiKey: "sk-ant-test")
+        let headers = config.buildHeaders()
+
+        #expect(headers["X-Api-Key"] == "sk-ant-test")
+        #expect(headers["anthropic-version"] == "2023-06-01")
+        #expect(headers["Content-Type"] == "application/json")
+    }
+
+    @Test("Negative timeout is clamped to zero")
+    func timeoutClamping() {
+        let config = AnthropicConfiguration(timeout: -10.0)
+        #expect(config.timeout == 0.0)
+    }
+
+    @Test("Thinking configuration validates budget tokens")
+    func thinkingConfig() {
+        let thinking = ThinkingConfiguration(enabled: true, budgetTokens: -100)
+        #expect(thinking.budgetTokens == 0) // Clamped
+
+        let standard = ThinkingConfiguration.standard
+        #expect(standard.enabled == true)
+        #expect(standard.budgetTokens == 1024)
+    }
+}
+
+// MARK: - Authentication Tests
+
+@Suite("Anthropic Authentication Tests")
+struct AnthropicAuthenticationTests {
+
+    @Test("API key authentication resolves correctly")
+    func apiKeyAuth() {
+        let auth = AnthropicAuthentication.apiKey("sk-ant-test")
+        #expect(auth.apiKey == "sk-ant-test")
+        #expect(auth.isValid == true)
+    }
+
+    @Test("Auto authentication reads ANTHROPIC_API_KEY env var")
+    func autoAuth() {
+        // Note: This test depends on environment variable
+        // Will be nil if not set, which is expected behavior
+        let auth = AnthropicAuthentication.auto
+        let envKey = ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"]
+        #expect(auth.apiKey == envKey)
+    }
+
+    @Test("Empty API key is not valid")
+    func emptyKeyNotValid() {
+        let auth = AnthropicAuthentication.apiKey("")
+        #expect(auth.isValid == false)
+    }
+
+    @Test("Hashable conformance works")
+    func hashableConformance() {
+        let auth1 = AnthropicAuthentication.apiKey("key1")
+        let auth2 = AnthropicAuthentication.apiKey("key1")
+        let auth3 = AnthropicAuthentication.apiKey("key2")
+
+        #expect(auth1 == auth2)
+        #expect(auth1 != auth3)
+    }
+}
+
+// MARK: - Model ID Tests
+
+@Suite("Anthropic Model ID Tests")
+struct AnthropicModelIDTests {
+
+    @Test("Static model properties have correct rawValue")
+    func staticModels() {
+        #expect(AnthropicModelID.claudeOpus45.rawValue == "claude-opus-4-5-20251101")
+        #expect(AnthropicModelID.claudeSonnet45.rawValue == "claude-sonnet-4-5-20250929")
+        #expect(AnthropicModelID.claude35Sonnet.rawValue == "claude-3-5-sonnet-20241022")
+        #expect(AnthropicModelID.claude3Opus.rawValue == "claude-3-opus-20240229")
+        #expect(AnthropicModelID.claude3Haiku.rawValue == "claude-3-haiku-20240307")
+    }
+
+    @Test("Display name exists")
+    func displayName() {
+        let model = AnthropicModelID.claudeSonnet45
+        #expect(!model.displayName.isEmpty)
+        #expect(model.displayName == "claude-sonnet-4-5")
+    }
+
+    @Test("Provider type is anthropic")
+    func providerType() {
+        #expect(AnthropicModelID.claudeOpus45.provider == .anthropic)
+    }
+
+    @Test("String literal initialization")
+    func stringLiteral() {
+        let model: AnthropicModelID = "claude-test-123"
+        #expect(model.rawValue == "claude-test-123")
+    }
+
+    @Test("Codable encoding and decoding")
+    func codable() throws {
+        let model = AnthropicModelID.claudeSonnet45
+        let encoder = JSONEncoder()
+        let decoder = JSONDecoder()
+
+        let data = try encoder.encode(model)
+        let decoded = try decoder.decode(AnthropicModelID.self, from: data)
+
+        #expect(decoded.rawValue == model.rawValue)
+    }
+}
+
+// MARK: - Error Mapping Tests
+
+@Suite("Anthropic Error Mapping Tests")
+struct AnthropicErrorMappingTests {
+
+    @Test("invalid_request_error maps to invalidInput")
+    func invalidRequestError() async {
+        let provider = AnthropicProvider(apiKey: "sk-ant-test")
+        let errorResponse = AnthropicErrorResponse(
+            error: .init(type: "invalid_request_error", message: "Invalid input")
+        )
+        let aiError = await provider.mapAnthropicError(errorResponse, statusCode: 400)
+
+        if case .invalidInput(let msg) = aiError {
+            #expect(msg == "Invalid input")
+        } else {
+            Issue.record("Expected invalidInput error")
+        }
+    }
+
+    @Test("authentication_error maps to authenticationFailed")
+    func authenticationError() async {
+        let provider = AnthropicProvider(apiKey: "sk-ant-test")
+        let errorResponse = AnthropicErrorResponse(
+            error: .init(type: "authentication_error", message: "Invalid API key")
+        )
+        let aiError = await provider.mapAnthropicError(errorResponse, statusCode: 401)
+
+        if case .authenticationFailed(let msg) = aiError {
+            #expect(msg == "Invalid API key")
+        } else {
+            Issue.record("Expected authenticationFailed error")
+        }
+    }
+
+    @Test("rate_limit_error maps to rateLimited")
+    func rateLimitError() async {
+        let provider = AnthropicProvider(apiKey: "sk-ant-test")
+        let errorResponse = AnthropicErrorResponse(
+            error: .init(type: "rate_limit_error", message: "Rate limit exceeded")
+        )
+        let aiError = await provider.mapAnthropicError(errorResponse, statusCode: 429)
+
+        if case .rateLimited = aiError {
+            // Success
+        } else {
+            Issue.record("Expected rateLimited error")
+        }
+    }
+
+    @Test("timeout_error maps to timeout")
+    func timeoutError() async {
+        let provider = AnthropicProvider(apiKey: "sk-ant-test")
+        let errorResponse = AnthropicErrorResponse(
+            error: .init(type: "timeout_error", message: "Request timed out")
+        )
+        let aiError = await provider.mapAnthropicError(errorResponse, statusCode: 408)
+
+        if case .timeout = aiError {
+            // Success
+        } else {
+            Issue.record("Expected timeout error")
+        }
+    }
+
+    @Test("unknown error maps to generationFailed")
+    func unknownError() async {
+        let provider = AnthropicProvider(apiKey: "sk-ant-test")
+        let errorResponse = AnthropicErrorResponse(
+            error: .init(type: "unknown_future_error", message: "Unknown error")
+        )
+        let aiError = await provider.mapAnthropicError(errorResponse, statusCode: 500)
+
+        if case .generationFailed = aiError {
+            // Success
+        } else {
+            Issue.record("Expected generationFailed error")
+        }
+    }
+}
+
+// MARK: - Request Building Tests
+
+@Suite("Anthropic Request Building Tests")
+struct AnthropicRequestBuildingTests {
+
+    @Test("buildRequestBody creates correct structure")
+    func buildRequestBody() async {
+        let provider = AnthropicProvider(apiKey: "sk-ant-test")
+        let messages = [
+            Message.user("Hello"),
+            Message.assistant("Hi there")
+        ]
+        let model = AnthropicModelID.claudeSonnet45
+        let config = GenerateConfig(maxTokens: 100, temperature: 0.7)
+
+        let request = await provider.buildRequestBody(
+            messages: messages,
+            model: model,
+            config: config,
+            stream: false
+        )
+
+        #expect(request.model == "claude-sonnet-4-5-20250929")
+        #expect(request.maxTokens == 100)
+        #expect(request.temperature != nil)
+        #expect(abs(request.temperature! - 0.7) < 0.01) // Floating point comparison
+        #expect(request.stream == nil) // False is represented as nil
+        #expect(request.messages.count == 2)
+    }
+
+    @Test("System messages go in separate field")
+    func systemMessageHandling() async {
+        let provider = AnthropicProvider(apiKey: "sk-ant-test")
+        let messages = [
+            Message.system("You are helpful"),
+            Message.user("Hello")
+        ]
+        let model = AnthropicModelID.claudeSonnet45
+        let config = GenerateConfig.default
+
+        let request = await provider.buildRequestBody(
+            messages: messages,
+            model: model,
+            config: config
+        )
+
+        #expect(request.system == "You are helpful")
+        #expect(request.messages.count == 1) // System not in messages array
+        #expect(request.messages[0].role == "user")
+    }
+
+    @Test("Stream flag sets correctly")
+    func streamFlag() async {
+        let provider = AnthropicProvider(apiKey: "sk-ant-test")
+        let messages = [Message.user("Test")]
+
+        let streamRequest = await provider.buildRequestBody(
+            messages: messages,
+            model: .claudeSonnet45,
+            config: .default,
+            stream: true
+        )
+
+        #expect(streamRequest.stream == true)
+    }
+
+    @Test("Thinking configuration adds thinking field")
+    func thinkingInRequest() async {
+        var config = AnthropicConfiguration.standard(apiKey: "sk-ant-test")
+        config.thinkingConfig = .standard
+
+        let provider = AnthropicProvider(configuration: config)
+        let messages = [Message.user("Test")]
+
+        let request = await provider.buildRequestBody(
+            messages: messages,
+            model: .claudeSonnet45,
+            config: .default
+        )
+
+        #expect(request.thinking != nil)
+        #expect(request.thinking?.type == "enabled")
+        #expect(request.thinking?.budget_tokens == 1024)
+    }
+}
+
+// MARK: - Response Parsing Tests
+
+@Suite("Anthropic Response Parsing Tests")
+struct AnthropicResponseParsingTests {
+
+    @Test("Parse successful response")
+    func successfulResponse() async {
+        let provider = AnthropicProvider(apiKey: "sk-ant-test")
+        let response = AnthropicMessagesResponse(
+            id: "msg_123",
+            type: "message",
+            role: "assistant",
+            content: [
+                .init(type: "text", text: "Hello, world!")
+            ],
+            model: "claude-sonnet-4-5-20250929",
+            stopReason: "end_turn",
+            usage: .init(inputTokens: 10, outputTokens: 5)
+        )
+
+        let result = await provider.convertToGenerationResult(response, startTime: Date())
+
+        #expect(result.text == "Hello, world!")
+        #expect(result.tokenCount == 5)
+        #expect(result.finishReason == .stop)
+        #expect(result.usage?.promptTokens == 10)
+        #expect(result.usage?.completionTokens == 5)
+    }
+
+    @Test("Extract text from content blocks")
+    func textExtraction() async {
+        let provider = AnthropicProvider(apiKey: "sk-ant-test")
+        let response = AnthropicMessagesResponse(
+            id: "msg_123",
+            type: "message",
+            role: "assistant",
+            content: [
+                .init(type: "text", text: "Part 1"),
+                .init(type: "text", text: " Part 2")
+            ],
+            model: "claude-sonnet-4-5-20250929",
+            stopReason: "end_turn",
+            usage: .init(inputTokens: 10, outputTokens: 5)
+        )
+
+        let result = await provider.convertToGenerationResult(response, startTime: Date())
+        #expect(result.text == "Part 1 Part 2")
+    }
+
+    @Test("Filter thinking blocks from response")
+    func thinkingBlocks() async {
+        let provider = AnthropicProvider(apiKey: "sk-ant-test")
+        let response = AnthropicMessagesResponse(
+            id: "msg_123",
+            type: "message",
+            role: "assistant",
+            content: [
+                .init(type: "thinking", text: "Internal reasoning..."),
+                .init(type: "text", text: "User response")
+            ],
+            model: "claude-sonnet-4-5-20250929",
+            stopReason: "end_turn",
+            usage: .init(inputTokens: 10, outputTokens: 15)
+        )
+
+        let result = await provider.convertToGenerationResult(response, startTime: Date())
+        #expect(result.text == "User response") // Thinking filtered out
+    }
+
+    @Test("Map stop_reason to FinishReason")
+    func stopReasonMapping() async {
+        let provider = AnthropicProvider(apiKey: "sk-ant-test")
+
+        // Test end_turn
+        let endTurn = AnthropicMessagesResponse(
+            id: "msg_1", type: "message", role: "assistant",
+            content: [.init(type: "text", text: "Done")],
+            model: "test", stopReason: "end_turn",
+            usage: .init(inputTokens: 1, outputTokens: 1)
+        )
+        let result1 = await provider.convertToGenerationResult(endTurn, startTime: Date())
+        #expect(result1.finishReason == .stop)
+
+        // Test max_tokens
+        let maxTokens = AnthropicMessagesResponse(
+            id: "msg_2", type: "message", role: "assistant",
+            content: [.init(type: "text", text: "Done")],
+            model: "test", stopReason: "max_tokens",
+            usage: .init(inputTokens: 1, outputTokens: 1)
+        )
+        let result2 = await provider.convertToGenerationResult(maxTokens, startTime: Date())
+        #expect(result2.finishReason == .maxTokens)
+    }
+}
+
+// MARK: - Streaming Event Tests
+
+@Suite("Anthropic Streaming Event Tests")
+struct AnthropicStreamingEventTests {
+
+    @Test("Parse content_block_delta event")
+    func contentBlockDeltaEvent() async throws {
+        let provider = AnthropicProvider(apiKey: "sk-ant-test")
+        let json = """
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+                "type": "text_delta",
+                "text": "Hello"
+            }
+        }
+        """.data(using: .utf8)!
+
+        let event = try await provider.parseStreamEvent(from: json)
+
+        if case .contentBlockDelta(let delta) = event {
+            #expect(delta.index == 0)
+            #expect(delta.delta.text == "Hello")
+        } else {
+            Issue.record("Expected content_block_delta event")
+        }
+    }
+
+    @Test("Parse message_start event")
+    func messageStartEvent() async throws {
+        let provider = AnthropicProvider(apiKey: "sk-ant-test")
+        let json = """
+        {
+            "type": "message_start",
+            "message": {
+                "id": "msg_123",
+                "type": "message",
+                "role": "assistant",
+                "content": [],
+                "model": "claude-sonnet-4-5-20250929",
+                "stop_reason": null,
+                "stop_sequence": null
+            }
+        }
+        """.data(using: .utf8)!
+
+        let event = try await provider.parseStreamEvent(from: json)
+
+        if case .messageStart(let start) = event {
+            #expect(start.message.id == "msg_123")
+            #expect(start.message.model == "claude-sonnet-4-5-20250929")
+        } else {
+            Issue.record("Expected message_start event")
+        }
+    }
+
+    @Test("processStreamEvent only yields chunks for delta events")
+    func skipNonDeltaEvents() async {
+        let provider = AnthropicProvider(apiKey: "sk-ant-test")
+        var tokenCount = 0
+
+        // message_start should not yield
+        let messageStart = AnthropicStreamEvent.MessageStart(
+            message: .init(id: "msg_1", type: "message", role: "assistant",
+                          content: [], model: "test",
+                          stopReason: nil, stopSequence: nil)
+        )
+        let chunk1 = await provider.processStreamEvent(.messageStart(messageStart), startTime: Date(), totalTokens: &tokenCount)
+        #expect(chunk1 == nil)
+
+        // content_block_stop should not yield
+        let chunk2 = await provider.processStreamEvent(.contentBlockStop, startTime: Date(), totalTokens: &tokenCount)
+        #expect(chunk2 == nil)
+
+        // content_block_delta should yield
+        let delta = AnthropicStreamEvent.ContentBlockDelta(
+            index: 0,
+            delta: .init(type: "text_delta", text: "Hi")
+        )
+        let chunk3 = await provider.processStreamEvent(.contentBlockDelta(delta), startTime: Date(), totalTokens: &tokenCount)
+        #expect(chunk3 != nil)
+        #expect(chunk3?.text == "Hi")
+    }
+
+    @Test("Unknown event type returns nil")
+    func unknownEventType() async throws {
+        let provider = AnthropicProvider(apiKey: "sk-ant-test")
+        let json = """
+        {
+            "type": "future_event_type",
+            "data": {}
+        }
+        """.data(using: .utf8)!
+
+        let event = try await provider.parseStreamEvent(from: json)
+        #expect(event == nil) // Unknown types gracefully return nil
+    }
+}
+
+// MARK: - Provider Availability Tests
+
+@Suite("Anthropic Provider Availability Tests")
+struct AnthropicProviderAvailabilityTests {
+
+    @Test("Provider is available with valid API key")
+    func availableWithValidKey() async {
+        let provider = AnthropicProvider(apiKey: "sk-ant-test")
+        let isAvailable = await provider.isAvailable
+        #expect(isAvailable == true)
+    }
+
+    @Test("Provider unavailable with empty API key")
+    func unavailableWithEmptyKey() async {
+        let config = AnthropicConfiguration.standard(apiKey: "")
+        let provider = AnthropicProvider(configuration: config)
+        let isAvailable = await provider.isAvailable
+        #expect(isAvailable == false)
+    }
+
+    @Test("Availability status returns correct reason")
+    func availabilityStatusReason() async {
+        let config = AnthropicConfiguration.standard(apiKey: "")
+        let provider = AnthropicProvider(configuration: config)
+        let status = await provider.availabilityStatus
+
+        #expect(status.isAvailable == false)
+        #expect(status.unavailableReason == .apiKeyMissing)
+    }
+}
