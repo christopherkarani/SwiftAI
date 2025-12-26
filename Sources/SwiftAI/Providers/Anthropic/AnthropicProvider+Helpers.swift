@@ -75,10 +75,50 @@ extension AnthropicProvider {
         let apiMessages = messages.compactMap { msg -> AnthropicMessagesRequest.MessageContent? in
             switch msg.role {
             case .user, .assistant:
-                return AnthropicMessagesRequest.MessageContent(
-                    role: msg.role.rawValue,
-                    content: msg.content.textValue
-                )
+                // Check if message has multimodal content (images)
+                switch msg.content {
+                case .text(let text):
+                    // Simple text-only message
+                    return AnthropicMessagesRequest.MessageContent(
+                        role: msg.role.rawValue,
+                        content: .text(text)
+                    )
+
+                case .parts(let parts):
+                    // Multimodal message with text and/or images
+                    var apiParts: [AnthropicMessagesRequest.MessageContent.ContentPart] = []
+
+                    for part in parts {
+                        switch part {
+                        case .text(let text):
+                            // Text part
+                            apiParts.append(AnthropicMessagesRequest.MessageContent.ContentPart(
+                                type: "text",
+                                text: text,
+                                source: nil
+                            ))
+
+                        case .image(let imageContent):
+                            // Image part
+                            let source = AnthropicMessagesRequest.MessageContent.ContentPart.ImageSource(
+                                type: "base64",
+                                mediaType: imageContent.mimeType,
+                                data: imageContent.base64Data
+                            )
+                            apiParts.append(AnthropicMessagesRequest.MessageContent.ContentPart(
+                                type: "image",
+                                text: nil,
+                                source: source
+                            ))
+                        }
+                    }
+
+                    return AnthropicMessagesRequest.MessageContent(
+                        role: msg.role.rawValue,
+                        content: .multipart(apiParts)
+                    )
+                }
+
             case .system, .tool:
                 // System messages go in separate field
                 // Tool messages not yet supported

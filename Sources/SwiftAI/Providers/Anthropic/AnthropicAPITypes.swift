@@ -103,11 +103,117 @@ internal struct AnthropicMessagesRequest: Codable, Sendable {
         /// Must be either `"user"` or `"assistant"`.
         let role: String
 
-        /// The text content of the message.
+        /// The content of the message (text or multimodal).
         ///
-        /// For multimodal content (images), use the full API structure.
-        /// This implementation supports text-only for simplicity.
-        let content: String
+        /// Supports both simple text strings and multimodal content with images.
+        let content: ContentType
+
+        // MARK: - ContentType
+
+        /// Content type - text or multipart (for vision).
+        ///
+        /// Anthropic's API supports two formats:
+        /// - Simple string: `"content": "Hello"`
+        /// - Array of parts: `"content": [{"type":"text","text":"Hello"},{"type":"image",...}]`
+        enum ContentType: Codable, Sendable {
+            /// Simple text content.
+            case text(String)
+
+            /// Multipart content (text + images).
+            case multipart([ContentPart])
+
+            // MARK: - Codable
+
+            /// Encodes content to JSON.
+            ///
+            /// - Text: Encoded as a simple string
+            /// - Multipart: Encoded as an array of content parts
+            ///
+            /// - Parameter encoder: The encoder to write to.
+            /// - Throws: `EncodingError` if encoding fails.
+            func encode(to encoder: Encoder) throws {
+                switch self {
+                case .text(let str):
+                    var container = encoder.singleValueContainer()
+                    try container.encode(str)
+
+                case .multipart(let parts):
+                    var container = encoder.unkeyedContainer()
+                    for part in parts {
+                        try container.encode(part)
+                    }
+                }
+            }
+
+            /// Decodes content from JSON.
+            ///
+            /// Tries string first, then array of parts.
+            ///
+            /// - Parameter decoder: The decoder to read from.
+            /// - Throws: `DecodingError` if neither format matches.
+            init(from decoder: Decoder) throws {
+                // Try string first
+                if let str = try? decoder.singleValueContainer().decode(String.self) {
+                    self = .text(str)
+                } else {
+                    // Try array of parts
+                    var container = try decoder.unkeyedContainer()
+                    var parts: [ContentPart] = []
+                    while !container.isAtEnd {
+                        parts.append(try container.decode(ContentPart.self))
+                    }
+                    self = .multipart(parts)
+                }
+            }
+        }
+
+        // MARK: - ContentPart
+
+        /// Content part for multimodal messages.
+        ///
+        /// Represents a single piece of content (text or image) in a multimodal message.
+        struct ContentPart: Codable, Sendable {
+            /// The type of content ("text" or "image").
+            let type: String
+
+            /// The text content (for text parts).
+            let text: String?
+
+            /// The image source (for image parts).
+            let source: ImageSource?
+
+            /// Image source with base64 data.
+            ///
+            /// Anthropic expects images in this format:
+            /// ```json
+            /// {
+            ///   "type": "image",
+            ///   "source": {
+            ///     "type": "base64",
+            ///     "media_type": "image/jpeg",
+            ///     "data": "base64-encoded-data"
+            ///   }
+            /// }
+            /// ```
+            struct ImageSource: Codable, Sendable {
+                /// Source type (always "base64").
+                let type: String
+
+                /// Media type ("image/jpeg", "image/png", "image/gif", "image/webp").
+                let mediaType: String
+
+                /// Base64-encoded image data.
+                let data: String
+
+                // MARK: - Coding Keys
+
+                enum CodingKeys: String, CodingKey {
+                    case type
+                    case mediaType = "media_type"
+                    case data
+                }
+            }
+        }
     }
 }
 
