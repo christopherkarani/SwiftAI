@@ -17,6 +17,8 @@ SwiftAI provides a clean, idiomatic Swift interface for LLM inference. Choose yo
 |:-----------|:---:|:-----------:|:---------:|:-----------------:|
 | Text Generation | ✓ | ✓ | ✓ | ✓ |
 | Streaming | ✓ | ✓ | ✓ | ✓ |
+| Structured Output | ✓ | ✓ | ✓ | ✓ |
+| Tool Calling | — | — | ✓ | — |
 | Vision | — | — | ✓ | — |
 | Extended Thinking | — | — | ✓ | — |
 | Embeddings | — | ✓ | — | — |
@@ -431,6 +433,148 @@ print("Total tokens: \(result.tokenCount)")
 
 ---
 
+## Structured Output
+
+Generate type-safe structured responses using the `@Generable` macro, mirroring Apple's FoundationModels API from iOS 26.
+
+### Defining Generable Types
+
+```swift
+import SwiftAI
+
+@Generable
+struct Recipe {
+    @Guide("The recipe title")
+    let title: String
+
+    @Guide("Cooking time in minutes", .range(1...180))
+    let cookingTime: Int
+
+    @Guide("Difficulty level", .anyOf(["easy", "medium", "hard"]))
+    let difficulty: String
+
+    @Guide("List of ingredients")
+    let ingredients: [String]
+}
+```
+
+### Generating Structured Responses
+
+```swift
+let provider = AnthropicProvider(apiKey: "sk-ant-...")
+
+// Generate typed response
+let recipe = try await provider.generate(
+    "Create a recipe for chocolate chip cookies",
+    returning: Recipe.self,
+    model: .claudeSonnet45
+)
+
+print(recipe.title)           // "Classic Chocolate Chip Cookies"
+print(recipe.cookingTime)     // 25
+print(recipe.difficulty)      // "easy"
+print(recipe.ingredients)     // ["flour", "butter", "chocolate chips", ...]
+```
+
+### Streaming Structured Output
+
+Get progressive updates as the response is generated:
+
+```swift
+let stream = provider.stream(
+    "Generate a detailed recipe",
+    returning: Recipe.self,
+    model: .claudeSonnet45
+)
+
+for try await partial in stream {
+    // Update UI progressively
+    if let title = partial.title {
+        titleLabel.text = title
+    }
+    if let ingredients = partial.ingredients {
+        updateIngredientsList(ingredients)
+    }
+}
+
+// Get final complete result
+let recipe = try await stream.collect()
+```
+
+### Available Constraints
+
+| Type | Constraints |
+|------|-------------|
+| String | `.pattern(_:)`, `.anyOf(_:)`, `.minLength(_:)`, `.maxLength(_:)` |
+| Int/Double | `.range(_:)`, `.minimum(_:)`, `.maximum(_:)` |
+| Array | `.count(_:)`, `.minimumCount(_:)`, `.maximumCount(_:)` |
+
+---
+
+## Tool Calling
+
+Define and execute tools that LLMs can invoke during generation.
+
+### Defining Tools
+
+```swift
+struct WeatherTool: AITool {
+    @Generable
+    struct Arguments {
+        @Guide("City name to get weather for")
+        let city: String
+
+        @Guide("Temperature unit", .anyOf(["celsius", "fahrenheit"]))
+        let unit: String?
+    }
+
+    var description: String { "Get current weather for a city" }
+
+    func call(arguments: Arguments) async throws -> String {
+        // Implement weather lookup
+        return "Weather in \(arguments.city): 22C, Sunny"
+    }
+}
+```
+
+### Executing Tools
+
+```swift
+// Create executor and register tools
+let executor = AIToolExecutor()
+await executor.register(WeatherTool())
+await executor.register(SearchTool())
+
+// Configure provider with tools
+let config = GenerateConfig.default
+    .tools([WeatherTool(), SearchTool()])
+    .toolChoice(.auto)
+
+// Generate with tool access
+let response = try await provider.generate(
+    messages: messages,
+    model: .claudeSonnet45,
+    config: config
+)
+
+// Handle tool calls if present
+if let toolCalls = response.toolCalls {
+    let results = try await executor.execute(toolCalls: toolCalls)
+    // Continue conversation with results...
+}
+```
+
+### Tool Choice Options
+
+```swift
+.toolChoice(.auto)              // Model decides whether to use tools
+.toolChoice(.required)          // Model must use a tool
+.toolChoice(.none)              // Model cannot use tools
+.toolChoice(.tool(name: "weather"))  // Model must use specific tool
+```
+
+---
+
 ## ChatSession
 
 Stateful conversation management with automatic history:
@@ -578,6 +722,8 @@ do {
 2. **Swift 6.2 Concurrency** — Actors, Sendable types, and AsyncSequence throughout.
 3. **Progressive Disclosure** — Simple one-liners for beginners, full control for experts.
 4. **Protocol-Oriented** — Extensible via protocols with associated types.
+5. **Type-Safe Structured Output** — @Generable macro mirrors Apple's FoundationModels API.
+6. **Tool Integration** — First-class support for LLM tool/function calling.
 
 ---
 
